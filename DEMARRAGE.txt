@@ -18,3 +18,10 @@ Le bot sans fenêtre, dans le même dossier :
    npm run bot
 
 Il faut Node.js 22 ou plus récent.
+
+Le journal (aucun ordre, aucune clé), dans le même dossier :
+   npm run journal
+Laisse-le tourner au moins 2 jours (ordinateur allumé, sans veille).
+Il écrit data/journal/observations.csv et data/journal/resultats.jsonl.
+Pour lire le verdict, dans un autre Terminal :
+   npm run journal:score
