@@ -98,6 +98,8 @@ export type DecisionInput = {
   armed: boolean;
   marketState: "ready" | "missing" | "closed";
   cash: number;
+  invert?: boolean;
+  earlyPrice?: number;
 };
 
 export type Decision = {
@@ -151,11 +153,24 @@ export function decide(input: DecisionInput): Decision {
   if (input.marketState === "closed") return wait("Le carnet n'accepte plus d'ordres sur cette fenêtre.");
   if (input.lossHalted) return wait("Plafond de perte atteint. Réinitialise l'encaisse ou relève le plafond.");
   if (input.alreadyIn) return wait("Déjà engagé sur cette fenêtre. On tient jusqu'au règlement.");
-  if (input.remainingSec > input.maxRemaining) {
-    return wait("Trop tôt. Le TWAP de la fenêtre n'est pas encore informatif.");
-  }
   if (input.remainingSec < input.minRemaining) {
     return wait("Trop tard pour entrer. On laisse filer la fin de fenêtre.");
+  }
+
+  const upAskNow = input.up.ask;
+  const downAskNow = input.down.ask;
+  const level = input.earlyPrice ?? 0.75;
+  const decisive =
+    (upAskNow != null && upAskNow >= level) || (downAskNow != null && downAskNow >= level);
+  const elapsed = 300 - input.remainingSec;
+  const balancedWait = Math.max(120, 300 - input.maxRemaining);
+  const needElapsed = decisive ? 30 : balancedWait;
+  if (elapsed < needElapsed) {
+    return wait(
+      decisive
+        ? "Direction déjà nette, encore quelques secondes."
+        : "Encore autour de 50/50. On attend que le prix choisisse, ou la fin du délai.",
+    );
   }
 
   const broken = bookProblem(input.up, input.down, input.maxSpread);
@@ -177,9 +192,16 @@ export function decide(input: DecisionInput): Decision {
     );
   }
 
-  const shares = Math.floor((input.stakeUsd / ask) * 100) / 100;
-  const fee = shares * takerFeePerShare(ask, input.feeRate);
-  const cost = shares * ask + fee;
+  let buySide = side;
+  let buyAsk = ask;
+  if (input.invert) {
+    buySide = side === "Up" ? "Down" : "Up";
+    buyAsk = buySide === "Up" ? upAsk : downAsk;
+  }
+
+  const shares = Math.floor((input.stakeUsd / buyAsk) * 100) / 100;
+  const fee = shares * takerFeePerShare(buyAsk, input.feeRate);
+  const cost = shares * buyAsk + fee;
   if (!(shares >= input.minOrderSize)) {
     return wait(
       `Mise trop petite : ${shares.toFixed(2)} parts, minimum du carnet ${input.minOrderSize}.`,
@@ -189,14 +211,17 @@ export function decide(input: DecisionInput): Decision {
     return wait("Encaisse papier insuffisante pour cette mise.");
   }
 
+  const buyLabel = buySide === "Up" ? "Up" : "Down";
   return {
     action: "buy",
-    side,
-    ask,
+    side: buySide,
+    ask: buyAsk,
     shares,
     cost,
     fee,
     ev,
-    reason: `Achat papier ${label} · écart ${cents(ev)} après frais taker.`,
+    reason: input.invert
+      ? `Achat inversé ${buyLabel} · le modèle voulait ${label}.`
+      : `Achat ${buyLabel} · écart ${cents(ev)} après frais taker.`,
   };
 }

@@ -1,4 +1,4 @@
-import { WINDOW_SEC, windowStartSec, type Quote } from "@/lib/engine";
+import { WINDOW_SEC, windowStartSec, type Quote, type Side } from "@/lib/engine";
 import type { PricePoint, Snapshot, WindowView } from "@/lib/market-types";
 
 export type { Snapshot } from "@/lib/market-types";
@@ -195,15 +195,34 @@ function sigmaFrom(candles: Candle[], start: number): number {
   return Math.min(25, Math.max(1, perSqrtSec));
 }
 
+async function loadSettled(start: number, now: number): Promise<{ start: number; outcome: Side } | null> {
+  if (now < start + WINDOW_SEC) return null;
+  const slug = `btc-updown-5m-${start}`;
+  const events = await getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`).catch(() => []);
+  const event = Array.isArray(events) ? (events[0] as { markets?: unknown[] } | undefined) : undefined;
+  const market = Array.isArray(event?.markets) ? (event.markets[0] as Record<string, unknown>) : undefined;
+  if (!market) return null;
+  const outcomes = asStringArray(market.outcomes);
+  const prices = asStringArray(market.outcomePrices).map(Number);
+  const index = prices.findIndex((price, i) => price >= 0.99 && prices.every((other, j) => j === i || other <= 0.01));
+  if (market.closed !== true && index < 0) return null;
+  const name = outcomes[index]?.toLowerCase();
+  if (name !== "up" && name !== "down") return null;
+  return { start, outcome: name === "up" ? "Up" : "Down" };
+}
+
 export async function loadSnapshot(): Promise<Snapshot> {
   const serverNow = Date.now() / 1000;
   const start = windowStartSec(serverNow);
   try {
     const slug = `btc-updown-5m-${start}`;
-    const [price, candles, events] = await Promise.all([
+    const [price, candles, events, settled] = await Promise.all([
       loadBtcPrice(),
       loadCandles(start - 3900, serverNow + 5),
       getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`).catch(() => []),
+      Promise.all(
+        [1, 2, 3, 4, 5, 6].map((n) => loadSettled(start - n * WINDOW_SEC, serverNow)),
+      ),
     ]);
 
     const event = Array.isArray(events) ? (events[0] as Record<string, unknown> | undefined) : undefined;
@@ -237,6 +256,8 @@ export async function loadSnapshot(): Promise<Snapshot> {
           slug,
           title: String(event?.title ?? marketRaw.question ?? slug),
           acceptingOrders: marketRaw.acceptingOrders !== false,
+          upToken,
+          downToken,
           up: upBook?.quote ?? { bid: null, ask: null, askSize: null },
           down: downBook?.quote ?? { bid: null, ask: null, askSize: null },
         };
@@ -259,6 +280,7 @@ export async function loadSnapshot(): Promise<Snapshot> {
         price,
         true,
       ),
+      settled: settled.filter((row): row is { start: number; outcome: Side } => row != null),
       market,
     };
   } catch (error) {

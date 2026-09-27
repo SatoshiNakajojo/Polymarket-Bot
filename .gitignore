@@ -3,3 +3,8 @@ node_modules/
 .github_repo
 .env
 .env.*
+*.key
+data/
+.vercel/
+artifacts/
+.grok/

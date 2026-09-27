@@ -24,10 +24,13 @@ export type Snapshot =
       minOrderSize: number;
       live: WindowView;
       previous: WindowView;
+      settled: { start: number; outcome: "Up" | "Down" }[];
       market: null | {
         slug: string;
         title: string;
         acceptingOrders: boolean;
+        upToken: string;
+        downToken: string;
         up: Quote;
         down: Quote;
       };

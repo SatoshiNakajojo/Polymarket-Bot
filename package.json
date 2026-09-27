@@ -16,13 +16,16 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --import ./scripts/alias-register.mjs --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/bot/policy.test.ts",
+    "signer": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/signer.ts",
+    "bot": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/run.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",
     "@hookform/resolvers": "^5.7.0",
+    "@polymarket/client": "^0.11.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-avatar": "^1.1.11",
@@ -74,6 +77,7 @@
     "tw-animate-css": "^1.3.4",
     "typescript": "^5.7.0",
     "vaul": "^1.1.2",
+    "viem": "^2.56.9",
     "vite": "^8.2.0",
     "zod": "^4.4.0",
     "zustand": "^5.0.0"

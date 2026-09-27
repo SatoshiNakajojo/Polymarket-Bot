@@ -1,0 +1,20 @@
+Fenêtre — bureau BTC 5 min, sur ton Mac
+
+1. Dézippe cette archive.
+2. Ouvre le Terminal DANS le dossier dézippé (pas dans ta maison).
+   cd chemin/vers/fenetre
+3. Installe, une fois :
+   npm install
+4. Lance l'interface :
+   npm run dev
+5. Ouvre http://127.0.0.1:8080
+
+Tu verras le même bureau que l'aperçu. Papier par défaut.
+Pour l'argent réel : bouton Réel, colle la clé, coche le consentement, puis Armer.
+La clé reste dans cet onglet. Elle n'est pas écrite sur le disque.
+
+Le bot sans fenêtre, dans le même dossier :
+   export POLY_KEY_FILE=$HOME/.config/fenetre.key
+   npm run bot
+
+Il faut Node.js 22 ou plus récent.
