@@ -157,9 +157,38 @@ function calibration(rows: Obs[]) {
 }
 
 type Rule = { minEdge: number; maxEdge: number; maxPrice: number; from: number; to: number };
+type Pick = { buyUp: boolean; ask: number } | null;
 
-/** Première occasion de chaque fenêtre qui respecte la règle, au meilleur prix vendeur. */
-function simulate(rows: Obs[], rule: Rule, stake: number) {
+/** Le modèle achète le côté où son écart après frais est le plus grand. */
+function modelPick(rule: Rule) {
+  return (r: Obs): Pick => {
+    if (r.elapsed < rule.from || r.elapsed >= rule.to) return null;
+    if (r.upAsk == null || r.downAsk == null) return null;
+    const evUp = sideEv(r.pModel, r.upAsk, r.feeRate);
+    const evDown = sideEv(1 - r.pModel, r.downAsk, r.feeRate);
+    const buyUp = evUp >= evDown;
+    const ev = buyUp ? evUp : evDown;
+    const ask = buyUp ? r.upAsk : r.downAsk;
+    if (ev < rule.minEdge || ev > rule.maxEdge || ask > rule.maxPrice) return null;
+    return { buyUp, ask };
+  };
+}
+
+/** Sans modèle : le favori coûte entre lo et hi, on achète le favori ou l'outsider. */
+function bandPick(lo: number, hi: number, side: "favori" | "outsider", from: number, to: number) {
+  return (r: Obs): Pick => {
+    if (r.elapsed < from || r.elapsed >= to) return null;
+    if (r.upAsk == null || r.downAsk == null) return null;
+    const upFavorite = r.upAsk >= r.downAsk;
+    const favAsk = upFavorite ? r.upAsk : r.downAsk;
+    if (favAsk < lo || favAsk >= hi) return null;
+    const buyUp = side === "favori" ? upFavorite : !upFavorite;
+    return { buyUp, ask: buyUp ? r.upAsk : r.downAsk };
+  };
+}
+
+/** Première occasion de chaque fenêtre, au meilleur prix vendeur. */
+function simulate(rows: Obs[], pick: (r: Obs) => Pick, stake: number) {
   const byWindow = new Map<number, Obs[]>();
   for (const r of rows) {
     const list = byWindow.get(r.window) ?? [];
@@ -172,28 +201,24 @@ function simulate(rows: Obs[], rule: Rule, stake: number) {
   for (const list of byWindow.values()) {
     list.sort((x, y) => x.elapsed - y.elapsed);
     for (const r of list) {
-      if (r.elapsed < rule.from || r.elapsed >= rule.to) continue;
-      if (r.upAsk == null || r.downAsk == null) continue;
-      const evUp = sideEv(r.pModel, r.upAsk, r.feeRate);
-      const evDown = sideEv(1 - r.pModel, r.downAsk, r.feeRate);
-      const buyUp = evUp >= evDown;
-      const ev = buyUp ? evUp : evDown;
-      const ask = buyUp ? r.upAsk : r.downAsk;
-      if (ev < rule.minEdge || ev > rule.maxEdge || ask > rule.maxPrice) continue;
-      const won = buyUp ? r.up === 1 : r.up === 0;
-      pnls.push(tradePnl(ask, won, stake, r.feeRate));
+      const choice = pick(r);
+      if (!choice) continue;
+      const won = choice.buyUp ? r.up === 1 : r.up === 0;
+      pnls.push(tradePnl(choice.ask, won, stake, r.feeRate));
       if (won) wins += 1;
-      priceSum += ask;
+      priceSum += choice.ask;
       break;
     }
   }
   return { ...meanSe(pnls), total: pnls.reduce((a, b) => a + b, 0), wins, avgPrice: pnls.length ? priceSum / pnls.length : 0 };
 }
 
-function printRule(label: string, rows: Obs[], rule: Rule) {
-  const s = simulate(rows, rule, STAKE);
+const RULE_HEADER = `   ${"Règle".padEnd(38)} trades  gagnés   prix    P&L total   P&L / trade`;
+
+function printRule(label: string, rows: Obs[], pick: (r: Obs) => Pick) {
+  const s = simulate(rows, pick, STAKE);
   if (s.n === 0) {
-    console.log(`   ${label.padEnd(34)}  aucun trade`);
+    console.log(`   ${label.padEnd(38)}  aucun trade`);
     return;
   }
   const band = Number.isFinite(s.se) ? ` ± ${(2 * s.se).toFixed(2)}` : "";
@@ -206,22 +231,39 @@ function printRule(label: string, rows: Obs[], rule: Rule) {
           ? "  ← perdant"
           : "";
   console.log(
-    `   ${label.padEnd(34)} ${pad(s.n, 5)}  ${pad(pct(s.wins / s.n), 7)}  ${pad(Math.round(s.avgPrice * 100) + " c", 5)}  ${pad(money(s.total), 10)}  ${money(s.mean)}${band}${verdict}`,
+    `   ${label.padEnd(38)} ${pad(s.n, 5)}  ${pad(pct(s.wins / s.n), 7)}  ${pad(Math.round(s.avgPrice * 100) + " c", 5)}  ${pad(money(s.total), 10)}  ${money(s.mean)}${band}${verdict}`,
   );
 }
 
 function simulations(rows: Obs[]) {
   console.log(`\n3) Simulation : un achat par fenêtre, ${STAKE} $ au meilleur prix vendeur, frais compris`);
   console.log("   (optimiste : en vrai, le prix part souvent avant que l'ordre arrive)");
-  console.log("   Règle                               trades  gagnés   prix    P&L total   P&L / trade");
+  console.log(RULE_HEADER);
   const base = { maxEdge: 1, maxPrice: 0.99, from: 0, to: 300 };
   for (const e of [0.02, 0.03, 0.05, 0.08]) {
-    printRule(`écart ≥ ${e * 100} c`, rows, { ...base, minEdge: e });
-    printRule(`écart ${e * 100}–15 c, prix ≤ 80 c`, rows, { ...base, minEdge: e, maxEdge: 0.15, maxPrice: 0.8 });
+    printRule(`écart ≥ ${e * 100} c`, rows, modelPick({ ...base, minEdge: e }));
+    printRule(`écart ${e * 100}–15 c, prix ≤ 80 c`, rows, modelPick({ ...base, minEdge: e, maxEdge: 0.15, maxPrice: 0.8 }));
   }
   console.log("\n   Par moment d'entrée (écart ≥ 5 c) :");
   for (const [a, b] of phases()) {
-    printRule(`entrée ${a / 60}–${b / 60} min`, rows, { ...base, minEdge: 0.05, from: a, to: b });
+    printRule(`entrée ${a / 60}–${b / 60} min`, rows, modelPick({ ...base, minEdge: 0.05, from: a, to: b }));
+  }
+  console.log("\n4) Sans modèle : acheter le favori, ou l'outsider (= tout inverser), selon le prix du favori");
+  console.log(RULE_HEADER);
+  for (const [lo, hi] of [
+    [0.75, 0.9],
+    [0.9, 0.97],
+    [0.97, 1],
+  ] as const) {
+    for (const [from, to] of [
+      [30, 180],
+      [180, 300],
+    ] as const) {
+      const when = `${from / 60 < 1 ? "0,5" : from / 60}–${to / 60} min`;
+      const band = `${Math.round(lo * 100)}–${Math.min(99, Math.round(hi * 100))} c`;
+      printRule(`favori ${band}, ${when}`, rows, bandPick(lo, hi, "favori", from, to));
+      printRule(`outsider (fav. ${band}), ${when}`, rows, bandPick(lo, hi, "outsider", from, to));
+    }
   }
 }
 
