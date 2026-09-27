@@ -355,8 +355,12 @@ function restore() {
   }
   const lines = readFileSync(OBS_FILE, "utf8").split("\n").slice(1);
   for (const line of lines) {
-    const start = Number(line.split(",")[1]);
-    if (start > 0 && !resolved.has(start) && nowSec() - start < 3 * 3600) pending.add(start);
+    const cells = line.split(",");
+    const start = Number(cells[1]);
+    if (!(start > 0) || resolved.has(start) || nowSec() - start >= 3 * 3600) continue;
+    pending.add(start);
+    const strike = Number(cells[OBS_COLUMNS.indexOf("strike")]);
+    if (strike > 0) strikes.set(start, { value: strike, src: cells[OBS_COLUMNS.indexOf("strike_src")] });
   }
 }
 

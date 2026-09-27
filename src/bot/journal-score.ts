@@ -26,8 +26,11 @@ const num = (s: string | undefined) => (s == null || s === "" ? null : Number(s)
 function load(): { rows: Obs[]; windows: number; resolved: number; agree: number; checked: number } {
   const obsFile = `${DIR}/observations.csv`;
   const outFile = `${DIR}/resultats.jsonl`;
-  if (!existsSync(obsFile) || !existsSync(outFile)) {
+  if (!existsSync(obsFile)) {
     throw new Error(`Journal introuvable dans ${DIR}/. Lance d'abord : npm run journal`);
+  }
+  if (!existsSync(outFile)) {
+    throw new Error("Aucune fenêtre réglée pour l'instant. Laisse tourner le journal quelques minutes de plus.");
   }
   const outcomes = new Map<number, "Up" | "Down">();
   let agree = 0;
@@ -94,35 +97,44 @@ function phases() {
   ] as const;
 }
 
+const MIN_WINDOWS = 100;
+
 function brierTable(rows: Obs[]) {
   console.log("\n1) Le modèle bat-il le marché ?  (score de Brier : plus bas = meilleur)");
-  console.log("   Minute        obs   modèle   marché   écart (modèle − marché)");
+  console.log("   Minute     fenêtres   modèle   marché   écart (modèle − marché)");
   for (const [a, b] of phases()) {
-    const diffs: number[] = [];
-    let sm = 0;
-    let sk = 0;
+    // Une fenêtre donne plusieurs relevés liés entre eux : on moyenne par fenêtre.
+    const perWindow = new Map<number, { m: number; k: number; n: number }>();
     for (const r of rows) {
       if (r.elapsed < a || r.elapsed >= b) continue;
       const q = marketP(r);
       if (q == null) continue;
-      const dm = brier(r.pModel, r.up);
-      const dk = brier(q, r.up);
-      sm += dm;
-      sk += dk;
-      diffs.push(dm - dk);
+      const acc = perWindow.get(r.window) ?? { m: 0, k: 0, n: 0 };
+      acc.m += brier(r.pModel, r.up);
+      acc.k += brier(q, r.up);
+      acc.n += 1;
+      perWindow.set(r.window, acc);
     }
-    const s = meanSe(diffs);
+    const list = [...perWindow.values()];
+    const s = meanSe(list.map((w) => (w.m - w.k) / w.n));
     if (s.n < 2) {
-      console.log(`   ${a / 60}–${b / 60} min   ${pad(s.n, 5)}   pas assez de données`);
+      console.log(`   ${a / 60}–${b / 60} min   ${pad(s.n, 7)}   pas assez de données`);
       continue;
     }
+    const sm = list.reduce((acc, w) => acc + w.m / w.n, 0) / s.n;
+    const sk = list.reduce((acc, w) => acc + w.k / w.n, 0) / s.n;
     const verdict =
-      s.mean + 2 * s.se < 0 ? "modèle MEILLEUR" : s.mean - 2 * s.se > 0 ? "marché meilleur" : "pas de différence nette";
+      s.n < MIN_WINDOWS
+        ? `trop tôt (moins de ${MIN_WINDOWS} fenêtres)`
+        : s.mean + 2 * s.se < 0
+          ? "modèle MEILLEUR"
+          : s.mean - 2 * s.se > 0
+            ? "marché meilleur"
+            : "pas de différence nette";
     console.log(
-      `   ${a / 60}–${b / 60} min   ${pad(s.n, 5)}   ${(sm / s.n).toFixed(4)}   ${(sk / s.n).toFixed(4)}   ${s.mean >= 0 ? "+" : ""}${s.mean.toFixed(4)} ± ${(2 * s.se).toFixed(4)}  → ${verdict}`,
+      `   ${a / 60}–${b / 60} min   ${pad(s.n, 7)}   ${sm.toFixed(4)}   ${sk.toFixed(4)}   ${s.mean >= 0 ? "+" : ""}${s.mean.toFixed(4)} ± ${(2 * s.se).toFixed(4)}  → ${verdict}`,
     );
   }
-  console.log("   Chaque fenêtre compte plusieurs fois (une par minute) : juge sur plusieurs centaines de fenêtres.");
 }
 
 function calibration(rows: Obs[]) {
@@ -186,7 +198,13 @@ function printRule(label: string, rows: Obs[], rule: Rule) {
   }
   const band = Number.isFinite(s.se) ? ` ± ${(2 * s.se).toFixed(2)}` : "";
   const verdict =
-    s.n >= 2 && s.mean - 2 * s.se > 0 ? "  ← positif, à confirmer" : s.n >= 2 && s.mean + 2 * s.se < 0 ? "  ← perdant" : "";
+    s.n < MIN_WINDOWS
+      ? ""
+      : s.mean - 2 * s.se > 0
+        ? "  ← positif, à confirmer"
+        : s.mean + 2 * s.se < 0
+          ? "  ← perdant"
+          : "";
   console.log(
     `   ${label.padEnd(34)} ${pad(s.n, 5)}  ${pad(pct(s.wins / s.n), 7)}  ${pad(Math.round(s.avgPrice * 100) + " c", 5)}  ${pad(money(s.total), 10)}  ${money(s.mean)}${band}${verdict}`,
   );
@@ -208,7 +226,15 @@ function simulations(rows: Obs[]) {
 }
 
 function main() {
-  const { rows, windows, resolved, agree, checked } = load();
+  let data: ReturnType<typeof load>;
+  try {
+    data = load();
+  } catch (error) {
+    console.log(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+    return;
+  }
+  const { rows, windows, resolved, agree, checked } = data;
   console.log(`Journal : ${windows} fenêtres observées, ${resolved} réglées, ${rows.length} observations utilisables.`);
   if (checked > 0) {
     console.log(
