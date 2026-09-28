@@ -6,7 +6,7 @@
  *   npm run journal          enregistre (laisser tourner)
  *   npm run journal:score    lit le journal et dit si le modèle bat le marché
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import {
   TWAP_SEC,
   WINDOW_SEC,
@@ -43,9 +43,25 @@ const OBS_COLUMNS = [
   "down_size",
   "fee_rate",
   "min_size",
+  "up_bid_size",
+  "up_bid_depth",
+  "up_ask_depth",
+  "ret15",
+  "ret60",
+  "ret300",
 ] as const;
 
-type Quote = { bid: number | null; ask: number | null; size: number | null };
+/** Profondeur cumulée jusqu'à 3 c du meilleur prix. */
+const DEPTH_BAND = 0.03;
+
+type Quote = {
+  bid: number | null;
+  ask: number | null;
+  size: number | null;
+  bidSize: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+};
 type WindowInfo = {
   slug: string;
   upToken: string;
@@ -209,21 +225,24 @@ async function loadBook(tokenId: string): Promise<Quote> {
     bids?: { price: string; size: string }[];
     asks?: { price: string; size: string }[];
   };
-  let bid: number | null = null;
-  let ask: number | null = null;
-  let size: number | null = null;
-  for (const row of book.bids ?? []) {
-    const p = Number(row.price);
-    if (p > 0 && (bid == null || p > bid)) bid = p;
-  }
-  for (const row of book.asks ?? []) {
-    const p = Number(row.price);
-    if (p > 0 && (ask == null || p < ask)) {
-      ask = p;
-      size = Number(row.size);
-    }
-  }
-  return { bid, ask, size };
+  const levels = (rows: { price: string; size: string }[] | undefined) =>
+    (rows ?? []).map((r) => ({ price: Number(r.price), size: Number(r.size) })).filter((l) => l.price > 0 && l.size >= 0);
+  const bids = levels(book.bids).sort((a, b) => b.price - a.price);
+  const asks = levels(book.asks).sort((a, b) => a.price - b.price);
+  const bid = bids[0]?.price ?? null;
+  const ask = asks[0]?.price ?? null;
+  const depth = (side: typeof bids, best: number | null) =>
+    best == null
+      ? null
+      : side.filter((l) => Math.abs(l.price - best) <= DEPTH_BAND + 1e-9).reduce((sum, l) => sum + l.size, 0);
+  return {
+    bid,
+    ask,
+    size: asks[0]?.size ?? null,
+    bidSize: bids[0]?.size ?? null,
+    bidDepth: depth(bids, bid),
+    askDepth: depth(asks, ask),
+  };
 }
 
 async function officialOutcome(start: number): Promise<"Up" | "Down" | null> {
@@ -255,6 +274,13 @@ function twapAt(t: number): { value: number; src: string } | null {
   if (cl != null) return { value: cl, src: "chainlink60" };
   const cb = stepAverage(coinbase, t - TWAP_SEC, t);
   return cb != null ? { value: cb, src: "coinbase60" } : null;
+}
+
+/** Rendement log du prix sur les k dernières secondes, même source que le spot. */
+function recentReturn(src: string, spot: number, t: number, k: number): number | null {
+  const series = src === "chainlink" ? chainlink : coinbase;
+  const past = valueAt(series, t - k, 10);
+  return past != null && past > 0 ? Math.log(spot / past) : null;
 }
 
 function lockedAvg(end: number, t: number): number | null {
@@ -304,6 +330,12 @@ async function record(start: number, checkpoint: number) {
     fmt(down.size, 2),
     info.feeRate,
     info.minSize,
+    fmt(up.bidSize, 2),
+    fmt(up.bidDepth, 2),
+    fmt(up.askDepth, 2),
+    fmt(recentReturn(spot.src, spot.value, t, 15), 7),
+    fmt(recentReturn(spot.src, spot.value, t, 60), 7),
+    fmt(recentReturn(spot.src, spot.value, t, 300), 7),
   ];
   appendFileSync(OBS_FILE, `${row.join(",")}\n`);
   done.add(`${start}:${checkpoint}`);
@@ -342,6 +374,13 @@ async function resolve(start: number) {
 
 function restore() {
   mkdirSync(DIR, { recursive: true });
+  // Un ancien fichier aux colonnes différentes est gardé à côté : le score lit les deux.
+  if (existsSync(OBS_FILE)) {
+    const head = readFileSync(OBS_FILE, "utf8").split("\n")[0];
+    if (head !== OBS_COLUMNS.join(",")) {
+      renameSync(OBS_FILE, `${DIR}/observations-${Math.floor(nowSec())}.csv`);
+    }
+  }
   if (!existsSync(OBS_FILE)) appendFileSync(OBS_FILE, `${OBS_COLUMNS.join(",")}\n`);
   if (existsSync(OUT_FILE)) {
     for (const line of readFileSync(OUT_FILE, "utf8").split("\n")) {

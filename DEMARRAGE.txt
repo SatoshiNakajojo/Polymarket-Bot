@@ -25,3 +25,8 @@ Laisse-le tourner au moins 2 jours (ordinateur allumé, sans veille).
 Il écrit data/journal/observations.csv et data/journal/resultats.jsonl.
 Pour lire le verdict, dans un autre Terminal :
    npm run journal:score
+
+Le modèle appris (élan du BTC + carnet Polymarket), une fois le journal bien rempli :
+   npm run journal:train
+Il s'entraîne sur les fenêtres passées et se teste sur celles qu'il n'a jamais vues.
+Il ne vaut quelque chose que s'il dit « bat le marché sur des fenêtres jamais vues ».

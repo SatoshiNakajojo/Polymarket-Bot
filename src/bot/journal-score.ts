@@ -3,85 +3,13 @@
  * prix du marché ? Puis simule quelques règles d'entrée, frais compris.
  *   npm run journal:score
  */
-import { existsSync, readFileSync } from "node:fs";
+import { loadJournal, marketP, type Journal, type Row } from "./journal-data.ts";
 import { brier, meanSe, sideEv, tradePnl } from "./journal-model.ts";
 
 const DIR = process.env.JOURNAL_DIR ?? "data/journal";
 const STAKE = Number(process.env.JOURNAL_STAKE ?? 5);
 
-type Obs = {
-  window: number;
-  elapsed: number;
-  pModel: number;
-  upBid: number | null;
-  upAsk: number | null;
-  downBid: number | null;
-  downAsk: number | null;
-  feeRate: number;
-  up: 0 | 1;
-};
-
-const num = (s: string | undefined) => (s == null || s === "" ? null : Number(s));
-
-function load(): { rows: Obs[]; windows: number; resolved: number; agree: number; checked: number } {
-  const obsFile = `${DIR}/observations.csv`;
-  const outFile = `${DIR}/resultats.jsonl`;
-  if (!existsSync(obsFile)) {
-    throw new Error(`Journal introuvable dans ${DIR}/. Lance d'abord : npm run journal`);
-  }
-  if (!existsSync(outFile)) {
-    throw new Error("Aucune fenêtre réglée pour l'instant. Laisse tourner le journal quelques minutes de plus.");
-  }
-  const outcomes = new Map<number, "Up" | "Down">();
-  let agree = 0;
-  let checked = 0;
-  for (const line of readFileSync(outFile, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const r = JSON.parse(line) as { window: number; outcome: "Up" | "Down"; journal_outcome: string | null };
-      outcomes.set(r.window, r.outcome);
-      if (r.journal_outcome) {
-        checked += 1;
-        if (r.journal_outcome === r.outcome) agree += 1;
-      }
-    } catch {
-      /* ligne abîmée */
-    }
-  }
-  const [head, ...lines] = readFileSync(obsFile, "utf8").split("\n");
-  const col = new Map(head.split(",").map((name, i) => [name, i]));
-  const get = (cells: string[], name: string) => cells[col.get(name) ?? -1];
-  const rows: Obs[] = [];
-  const seen = new Set<number>();
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const c = line.split(",");
-    const window = Number(get(c, "window"));
-    seen.add(window);
-    const outcome = outcomes.get(window);
-    const pModel = num(get(c, "p_model"));
-    if (!outcome || pModel == null) continue;
-    rows.push({
-      window,
-      elapsed: Number(get(c, "elapsed")),
-      pModel,
-      upBid: num(get(c, "up_bid")),
-      upAsk: num(get(c, "up_ask")),
-      downBid: num(get(c, "down_bid")),
-      downAsk: num(get(c, "down_ask")),
-      feeRate: Number(get(c, "fee_rate")) || 0.07,
-      up: outcome === "Up" ? 1 : 0,
-    });
-  }
-  return { rows, windows: seen.size, resolved: new Set(rows.map((r) => r.window)).size, agree, checked };
-}
-
-/** Milieu du carnet Up, si le carnet est lisible. */
-function marketP(r: Obs): number | null {
-  if (r.upBid == null || r.upAsk == null) return null;
-  if (r.upAsk - r.upBid > 0.1) return null;
-  return (r.upBid + r.upAsk) / 2;
-}
+type Obs = Row;
 
 const pct = (x: number) => `${(x * 100).toFixed(1)} %`;
 const pad = (s: string | number, n: number) => String(s).padStart(n);
@@ -268,9 +196,9 @@ function simulations(rows: Obs[]) {
 }
 
 function main() {
-  let data: ReturnType<typeof load>;
+  let data: Journal;
   try {
-    data = load();
+    data = loadJournal(DIR);
   } catch (error) {
     console.log(error instanceof Error ? error.message : error);
     process.exitCode = 1;
