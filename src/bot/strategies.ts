@@ -52,7 +52,7 @@ class Book {
     this.cash -= paid + shares * takerFeePerShare(ask, r.feeRate);
     this.volume += paid;
     this.legs += 1;
-    this.note(r, `achat ${side} ${paid.toFixed(2)} $ à ${Math.round(ask * 100)} c`);
+    this.note(r, `achat ${side} ${paid.toFixed(2).replace(".", ",")} $ à ${Math.round(ask * 100)} c`);
     const leg = { side, shares };
     this.held.push(leg);
     return leg;
@@ -63,7 +63,7 @@ class Book {
     this.cash -= shares * ask + shares * takerFeePerShare(ask, r.feeRate);
     this.volume += shares * ask;
     this.legs += 1;
-    this.note(r, `couverture ${side} ${shares.toFixed(2)} parts à ${Math.round(ask * 100)} c`);
+    this.note(r, `couverture ${side} ${shares.toFixed(2).replace(".", ",")} parts à ${Math.round(ask * 100)} c`);
     this.held.push({ side, shares });
   }
   sell(i: number, leg: Leg): boolean {

@@ -3,7 +3,6 @@ const KEY = "fenetre-equity-v2";
 export type EquitySource = "live" | "paper";
 export type EquityPoint = { t: number; value: number; source: EquitySource };
 
-const EMPTY: EquityPoint[] = [];
 const listeners = new Set<() => void>();
 
 function fromStorage(): EquityPoint[] {

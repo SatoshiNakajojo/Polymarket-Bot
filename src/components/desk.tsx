@@ -24,7 +24,7 @@ import {
 } from "@/lib/format";
 import type { Snapshot } from "@/lib/market-types";
 import { getMarketSnapshot } from "@/lib/snapshot";
-import { Lab } from "@/components/lab";
+import { Lab, SectionNav } from "@/components/lab";
 import { connectLive, depositBridgeAddress, disconnectLive, getLiveSession, placeLiveOrder, placeLiveSell, readWalletBalances, redeemWinnings, returnCashToMetaMask, subscribeLive, type WalletBalances } from "@/lib/live";
 import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/equity";
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
@@ -715,6 +715,7 @@ export function Desk() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl px-4 py-5 sm:px-6 sm:py-8">
       <Header cash={cash} armed={armed} pnl={cash - STARTING_CASH} mode={mode} liveArmed={liveArmed} wallet={session?.wallet ?? null} />
+      <SectionNav />
       {!snap && !failed ? (
         <p className="mt-10 text-sm text-mist">Lecture du carnet Polymarket et du BTC…</p>
       ) : null}
@@ -806,7 +807,7 @@ function Header({
           {import.meta.env.VITE_BOT_TITLE || "MAC POLY BOT"}
         </h1>
         <p className="mt-1 text-sm text-mist">
-          {live ? "Ordres réels en pUSD, une fenêtre à la fois." : "Quatre stratégies papier en parallèle, chacune avec son historique."}
+          {live ? "Ordres réels en pUSD, une fenêtre à la fois." : "Six stratégies papier en parallèle, chacune avec son historique."}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
@@ -958,19 +959,19 @@ function Live({
   const pad = Math.max(8, (hi - lo) * 0.25);
 
   return (
-    <div className="mt-4 flex flex-col gap-3">
+    <div id="marche" className="mt-4 flex scroll-mt-16 flex-col gap-3">
       <div className="grid gap-3 lg:grid-cols-12">
-        <section className="rounded-lg border border-rule bg-panel p-4 lg:col-span-7">
-          <div className="flex items-end justify-between gap-4">
+        <section className="min-w-0 rounded-lg border border-rule bg-panel p-4 lg:col-span-7">
+          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
             <div>
               <p className="font-mono text-xs text-mist">fenêtre en cours</p>
-              <p className="mt-1 font-mono text-5xl font-medium leading-none tracking-tight text-ink">
+              <p className="mt-1 font-mono text-4xl font-medium leading-none tracking-tight text-ink sm:text-5xl">
                 {formatClock(remaining)}
               </p>
             </div>
             <div className="text-right">
               <p className="font-mono text-xs text-mist">BTC</p>
-              <p className="font-mono text-2xl leading-none text-ink">{formatUsd(snap.price, 2)}</p>
+              <p className="font-mono text-xl leading-none text-ink sm:text-2xl">{formatUsd(snap.price, 2)}</p>
               <p className={`mt-1 font-mono text-xs ${delta >= 0 ? "text-up" : "text-down"}`}>
                 {delta >= 0 ? "+" : "−"}
                 {formatUsd(Math.abs(delta), 2)} · {formatPlain(bps, 1)} bps
@@ -981,8 +982,11 @@ function Live({
             <div className="h-full bg-brass" style={{ width: `${progress}%` }} />
           </div>
           <dl className="mt-3 grid grid-cols-3 gap-3">
-            <Stat label="Ouverture" value={formatUsd(snap.live.strike, 2)} />
-            <Stat label="TWAP" value={formatUsd(snap.live.twap, 2)} />
+            <Stat label="Prix à battre" value={formatUsd(snap.live.strike, 2)} />
+            <Stat
+              label="Moy. dernière min"
+              value={snap.live.last60 != null ? formatUsd(snap.live.last60, 2) : "dès 4:00"}
+            />
             <Stat label="Modèle Up" value={formatProb(fair.pUp)} />
           </dl>
           <div className="mt-3 h-28">
@@ -1013,7 +1017,7 @@ function Live({
           </p>
         </section>
 
-        <div className="flex h-full flex-col gap-3 lg:col-span-5">
+        <div className="flex h-full min-w-0 flex-col gap-3 lg:col-span-5">
           <div className="grid grid-cols-2 gap-3">
             <QuoteCard
               side="Up"
@@ -1159,7 +1163,8 @@ function Controls({
 
   return (
     <form
-      className="rounded-lg border border-rule bg-panel p-4"
+      id="reglages"
+      className="scroll-mt-16 rounded-lg border border-rule bg-panel p-4"
       onSubmit={(event) => event.preventDefault()}
     >
       <div className="flex items-center justify-between gap-3">
@@ -1671,14 +1676,14 @@ function Portfolio({
   const pad = hi - lo < 0.5 ? 1 : Math.max(0.25, (hi - lo) * 0.12);
 
   return (
-    <section className="rounded-lg border border-rule bg-panel p-4">
+    <section id="portefeuille" className="scroll-mt-16 rounded-lg border border-rule bg-panel p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-sm font-medium text-ink">Portefeuille</h2>
           <p className="mt-1 text-xs text-mist">Même chiffre que le total en haut, relevé au fil du temps.</p>
         </div>
         <div className="text-right">
-          <p className="font-mono text-lg text-ink">{shown == null ? "…" : formatUsd(shown, 2)}</p>
+          <p className="whitespace-nowrap font-mono text-lg text-ink">{shown == null ? "…" : formatUsd(shown, 2)}</p>
           <p className={`font-mono text-xs ${change >= 0 ? "text-up" : "text-down"}`}>
             {shown == null ? "solde en lecture" : formatSignedUsd(change)}
           </p>
@@ -1708,7 +1713,7 @@ function Portfolio({
               />
               <YAxis
                 domain={[lo - pad, hi + pad]}
-                tickFormatter={(v: number) => formatUsd(v, hi - lo < 50 ? 2 : 0)}
+                tickFormatter={(v: number) => formatUsd(v, hi - lo < 50 ? 2 : 0).replace(" $", "\u00a0$")}
                 stroke="var(--color-mist)"
                 tick={{ fill: "var(--color-mist)", fontSize: 11 }}
                 tickLine={false}
@@ -1805,7 +1810,7 @@ function Journal({
     return { plan, pnl, count: settled.length, cash: null as number | null, locked: 0 };
   });
   return (
-    <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
+    <section id="historique" className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-medium text-ink">Historique</h2>
         <div className="flex gap-2">
@@ -1916,7 +1921,7 @@ function BookCurve({
             />
             <YAxis
               domain={[lo - pad, hi + pad]}
-              tickFormatter={(v: number) => formatUsd(v, hi - lo < 50 ? 2 : 0)}
+              tickFormatter={(v: number) => formatUsd(v, hi - lo < 50 ? 2 : 0).replace(" $", "\u00a0$")}
               stroke="var(--color-mist)"
               tick={{ fill: "var(--color-mist)", fontSize: 11 }}
               tickLine={false}

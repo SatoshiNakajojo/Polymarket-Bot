@@ -36,6 +36,40 @@ function duration(sec: number): string {
   return `${Math.floor(sec / 86_400)} j ${Math.floor((sec % 86_400) / 3600)} h`;
 }
 
+const SECTIONS = [
+  { id: "marche", label: "Marché" },
+  { id: "portefeuille", label: "Portefeuille" },
+  { id: "reglages", label: "Réglages" },
+  { id: "historique", label: "Historique" },
+  { id: "laboratoire", label: "Programmes" },
+  { id: "fenetres", label: "Fenêtres" },
+  { id: "teneur", label: "Teneur de marché" },
+  { id: "strategies", label: "Stratégies" },
+];
+
+/** Barre qui reste en haut pendant le défilement, pour sauter à chaque partie de la page. */
+export function SectionNav() {
+  return (
+    <nav
+      aria-label="Parties de la page"
+      className="sticky top-0 z-20 -mx-4 mt-3 overflow-x-auto border-b border-rule bg-canvas/90 px-4 py-2 backdrop-blur sm:-mx-6 sm:px-6"
+    >
+      <ul className="flex gap-1 whitespace-nowrap text-sm">
+        {SECTIONS.map((s) => (
+          <li key={s.id}>
+            <a
+              href={`#${s.id}`}
+              className="inline-flex min-h-9 items-center rounded-md px-2.5 text-mist hover:bg-panel-2 hover:text-ink"
+            >
+              {s.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 /** Tout ce qui tourne en papier sur cette machine : programmes, fenêtres, teneur de marché, stratégies. */
 export function Lab() {
   const [lab, setLab] = useState<LabData | null>(null);
@@ -112,7 +146,10 @@ function Services({ lab }: { lab: LabData }) {
     },
   ];
   return (
-    <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
+    <section
+      id="laboratoire"
+      className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4"
+    >
       <h2 className="text-sm font-medium text-ink">Programmes papier sur cette machine</h2>
       <p className="mt-1 text-xs text-mist">
         Aucun de ces programmes ne passe d'ordre réel ni ne lit de clé.
@@ -157,7 +194,7 @@ function statusTone(w: LabWindow) {
 
 function Windows({ windows }: { windows: LabWindow[] }) {
   return (
-    <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
+    <section id="fenetres" className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4">
       <h2 className="text-sm font-medium text-ink">Fenêtres</h2>
       <p className="mt-1 text-xs text-mist">
         Les 12 dernières fenêtres de 5 min, la plus récente en haut.
@@ -248,7 +285,7 @@ function Maker({ lab }: { lab: LabData }) {
   const baseFills = live.get("base")?.executions ?? [];
 
   return (
-    <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
+    <section id="teneur" className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-medium text-ink">Teneur de marché (papier)</h2>
@@ -375,7 +412,7 @@ function Maker({ lab }: { lab: LabData }) {
               />
               <YAxis
                 width={56}
-                tickFormatter={(v: number) => `${v} $`}
+                tickFormatter={(v: number) => `${v}\u00a0$`}
                 stroke="var(--color-mist)"
                 tick={{ fill: "var(--color-mist)", fontSize: 11 }}
               />
@@ -419,7 +456,7 @@ function Maker({ lab }: { lab: LabData }) {
           <ul className="mt-1 space-y-0.5 font-mono text-xs text-ink">
             {[...baseFills].reverse().map((f) => (
               <li key={`${f.t}-${f.side}-${f.price}`}>
-                {formatTime(Date.parse(f.t))} · achat {f.side} {f.shares.toFixed(1)} parts à{" "}
+                {formatTime(Date.parse(f.t))} · achat {f.side} {formatPlain(f.shares, 1)} parts à{" "}
                 {formatCents(f.price)} ({f.how})
               </li>
             ))}
@@ -443,7 +480,10 @@ function Paper({ lab }: { lab: LabData }) {
       journal: null,
     }));
   return (
-    <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
+    <section
+      id="strategies"
+      className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4"
+    >
       <h2 className="text-sm font-medium text-ink">Stratégies papier (suivi en continu)</h2>
       <p className="mt-1 text-xs text-mist">
         {scores ? `Lancé le ${new Date(scores.lancement).toLocaleString("fr-FR")} · ` : ""}
