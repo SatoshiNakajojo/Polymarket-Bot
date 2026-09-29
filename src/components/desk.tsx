@@ -799,7 +799,9 @@ function Header({
     <header className="flex flex-wrap items-end justify-between gap-4 border-b border-rule pb-4">
       <div>
         <p className="font-mono text-xs tracking-widest text-brass">BTC · 5 MIN · POLYMARKET</p>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink">Fenêtre</h1>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink">
+          {import.meta.env.VITE_BOT_TITLE || "MAC POLY BOT"}
+        </h1>
         <p className="mt-1 text-sm text-mist">
           {live ? "Ordres réels en pUSD, une fenêtre à la fois." : "Quatre stratégies papier en parallèle, chacune avec son historique."}
         </p>
