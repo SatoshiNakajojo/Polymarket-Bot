@@ -27,7 +27,7 @@ import { getMarketSnapshot } from "@/lib/snapshot";
 import { connectLive, depositBridgeAddress, disconnectLive, getLiveSession, placeLiveOrder, placeLiveSell, readWalletBalances, redeemWinnings, returnCashToMetaMask, subscribeLive, type WalletBalances } from "@/lib/live";
 import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/equity";
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
-import { STARTING_CASH, adoptSaved, currentSaved, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperTrade } from "@/lib/store";
+import { STARTING_CASH, adoptSaved, currentSaved, paperLabel, PAPER_PLANS, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperPlan, type PaperTrade } from "@/lib/store";
 
 function entryNote(
   elapsedSec: number,
@@ -68,6 +68,8 @@ export function Desk() {
   const lossCap = useDesk((s) => s.lossCap);
   const mode = useDesk((s) => s.mode);
   const liveFills = useDesk((s) => s.liveFills);
+  const books = useDesk((s) => s.books);
+  const paperOn = useDesk((s) => s.paperOn);
   const cash = useDesk((s) => s.cash);
   const trades = useDesk((s) => s.trades);
   const open = useDesk((s) => s.open);
@@ -123,7 +125,7 @@ export function Desk() {
       window.clearTimeout(id);
       if (useDesk.getState().hydrated) void saveHistory({ data: currentSaved() as HistoryFile });
     };
-  }, [hydrated, trades, liveFills, cash, open, mode, stakeUsd, minEdge, lossCap, entryWaitMin, earlyPct, invert, armed]);
+  }, [hydrated, trades, liveFills, cash, open, books, mode, stakeUsd, minEdge, lossCap, entryWaitMin, earlyPct, invert, armed]);
 
   useEffect(() => {
     let stop = false;
@@ -152,10 +154,12 @@ export function Desk() {
   useEffect(() => {
     if (!snap || !snap.ok || !hydrated) return;
     const state = useDesk.getState();
-    if (state.open) {
-      const official = snap.settled.find((row) => row.start === state.open?.windowStart);
-      if (official) state.settle(state.open.windowStart, official.outcome, snap.previous.twap);
-      else if (state.open.windowStart < snap.live.start - 4 * 300) state.voidOpen(state.open.windowStart);
+    for (const plan of PAPER_PLANS) {
+      const open = state.books[plan].open;
+      if (!open) continue;
+      const official = snap.settled.find((row) => row.start === open.windowStart);
+      if (official) state.settleBook(plan, open.windowStart, official.outcome, snap.previous.twap);
+      else if (open.windowStart < snap.live.start - 4 * 300) state.voidBook(plan, open.windowStart);
     }
     for (const row of snap.settled) state.settleLive(row.start, row.outcome);
 
@@ -338,10 +342,8 @@ export function Desk() {
           });
         }
       }
-      return;
-    }
-
-    if (liveMode) {
+      if (liveMode) return;
+    } else if (liveMode) {
       if (!liveArmed || !session || placing.current) return;
       if (fresh.enteredWindow === snap.live.start) return;
       const tokenId = decision.side === "Up" ? market?.upToken : market?.downToken;
@@ -446,31 +448,74 @@ export function Desk() {
       return;
     }
 
-    if (useDesk.getState().mode !== "paper") return;
-    if (decision.shares == null || decision.cost == null || decision.fee == null || decision.ev == null) {
-      return;
-    }
-    const position: OpenPosition = {
-        id: `${snap.live.start}-${decision.side}`,
+    if (useDesk.getState().mode !== "paper" || !market) return;
+    const triggerPct = Math.round(Math.max(market.up.ask ?? 0, market.down.ask ?? 0) * 100);
+    const elapsed = Math.max(0, nowSec - snap.live.start);
+    for (const plan of PAPER_PLANS) {
+      const now = useDesk.getState();
+      if (!now.paperOn[plan]) continue;
+      const book = now.books[plan];
+      if (plan === "stop" && book.open?.btc != null && !book.open.hedge) {
+        const crossed = book.open.side === "Up" ? snap.price < book.open.btc : snap.price > book.open.btc;
+        const bid = book.open.side === "Up" ? market.up.bid : market.down.bid;
+        if (crossed && bid != null) {
+          now.stopBook(plan, bid);
+          continue;
+        }
+      }
+      if (plan === "double" && book.open && !book.open.hedge) {
+        const otherSide = book.open.side === "Up" ? "Down" : "Up";
+        const otherAsk = otherSide === "Up" ? market.up.ask : market.down.ask;
+        if (otherAsk != null && pairLock(book.open.ask, otherAsk, snap.feeRate) >= PAIR_MIN) {
+          const shares = book.open.shares;
+          const fee = shares * takerFeePerShare(otherAsk, snap.feeRate);
+          const cost = shares * otherAsk + fee;
+          if (shares >= snap.minOrderSize && cost <= book.cash) {
+            now.hedgeBook(plan, { side: otherSide, ask: otherAsk, shares, cost, fee });
+          }
+        }
+      }
+      const current = useDesk.getState().books[plan];
+      const choice = decide({
+        remainingSec: Math.max(0, snap.live.end - nowSec),
+        pUp: fair.pUp,
+        up: market.up,
+        down: market.down,
+        stakeUsd: now.stakeUsd,
+        minOrderSize: snap.minOrderSize,
+        feeRate: snap.feeRate,
+        minEdge: now.minEdge,
+        minRemaining: ENTRY_MIN_REMAINING,
+        maxRemaining: 300 - now.entryWaitMin * 60,
+        maxSpread: MAX_SPREAD,
+        lossHalted: current.cash - STARTING_CASH <= -now.lossCap,
+        alreadyIn: current.open != null || current.enteredWindow === snap.live.start,
+        armed: now.armed,
+        marketState: market.acceptingOrders ? "ready" : "closed",
+        cash: current.cash,
+        invert: plan === "inverse",
+        earlyPrice: now.earlyPct / 100,
+      });
+      if (choice.action !== "buy" || !choice.side || choice.ask == null || choice.shares == null || choice.cost == null || choice.fee == null || choice.ev == null) {
+        continue;
+      }
+      const notePlan = plan === "double" ? "double" : plan === "stop" ? "stop" : "direct";
+      useDesk.getState().enterBook(plan, {
+        id: `${snap.live.start}-${plan}-${choice.side}`,
         windowStart: snap.live.start,
-        side: decision.side,
-        ask: decision.ask,
-        shares: decision.shares,
-        cost: decision.cost,
-        fee: decision.fee,
-        pModel: decision.side === "Up" ? fair.pUp : 1 - fair.pUp,
-        ev: decision.ev,
+        side: choice.side,
+        ask: choice.ask,
+        shares: choice.shares,
+        cost: choice.cost,
+        fee: choice.fee,
+        pModel: choice.side === "Up" ? fair.pUp : 1 - fair.pUp,
+        ev: choice.ev,
         openedAt: Date.now(),
         strike: snap.live.strike,
-        entry: entryNote(
-          Math.max(0, nowSec - snap.live.start),
-          Math.round(Math.max(market?.up.ask ?? 0, market?.down.ask ?? 0) * 100),
-          fresh.earlyPct,
-          fresh.invert,
-          fresh.pair ? "double" : fresh.btcStop ? "stop" : "direct",
-        ),
-      };
-      fresh.enter(position);
+        btc: snap.price,
+        entry: entryNote(elapsed, triggerPct, now.earlyPct, plan === "inverse", notePlan),
+      });
+    }
   }, [snap, hydrated, armed, stakeUsd, minEdge, lossCap, nowSec, mode, liveArmed, session]);
 
   return (
@@ -496,7 +541,7 @@ export function Desk() {
       ) : (
         <Portfolio cash={cash} wallet={session?.wallet ?? null} mode={mode} />
       )}
-      <Journal trades={trades} open={open} liveFills={liveFills} nowSec={nowSec} />
+      <Journal books={books} paperOn={paperOn} liveFills={liveFills} nowSec={nowSec} />
       <p className="mt-6 max-w-3xl text-xs leading-relaxed text-mist">
         Le papier et le réel se règlent sur le résultat Polymarket, donc le TWAP Chainlink.
         Le prix vient de ce flux. En réel, l'ordre est un achat FAK signé dans cet onglet : la clé n'est pas enregistrée et
@@ -564,7 +609,7 @@ function Header({
         <p className="font-mono text-xs tracking-widest text-brass">BTC · 5 MIN · POLYMARKET</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink">Fenêtre</h1>
         <p className="mt-1 text-sm text-mist">
-          {live ? "Ordres réels en pUSD, une fenêtre à la fois." : "Up ou Down, une fenêtre à la fois. Encaisse fictive."}
+          {live ? "Ordres réels en pUSD, une fenêtre à la fois." : "Quatre stratégies papier en parallèle, chacune avec son historique."}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
@@ -597,7 +642,7 @@ function Header({
               <p className="font-mono text-xs text-brass">{copied ? "Adresse copiée" : "Clique sur l'adresse pour la copier"}</p>
               {!live ? (
                 <p className={`font-mono text-xs ${pnl >= 0 ? "text-up" : "text-down"}`}>
-                  papier {formatUsd(cash, 2)}
+                  papier normal {formatUsd(cash, 2)}
                 </p>
               ) : null}
             </>
@@ -609,7 +654,7 @@ function Header({
           ) : (
             <>
               <p className="font-mono text-lg text-ink">{formatUsd(cash, 2)}</p>
-              <p className={`font-mono text-xs ${pnl >= 0 ? "text-up" : "text-down"}`}>session {formatSignedUsd(pnl)}</p>
+              <p className={`font-mono text-xs ${pnl >= 0 ? "text-up" : "text-down"}`}>normal {formatSignedUsd(pnl)}</p>
             </>
           )}
         </div>
@@ -909,8 +954,10 @@ function Controls({
   const setInvert = useDesk((s) => s.setInvert);
   const pair = useDesk((s) => s.pair);
   const btcStop = useDesk((s) => s.btcStop);
+  const paperOn = useDesk((s) => s.paperOn);
   const setPair = useDesk((s) => s.setPair);
   const setBtcStop = useDesk((s) => s.setBtcStop);
+  const setPaperOn = useDesk((s) => s.setPaperOn);
   const reset = useDesk((s) => s.reset);
   const mode = useDesk((s) => s.mode);
   const setMode = useDesk((s) => s.setMode);
@@ -1039,12 +1086,28 @@ function Controls({
           onChange={(n) => setLossCap(clampField(n, 10, 500, 80))}
         />
       </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {PAPER_PLANS.map((plan) => (
+          <button
+            key={plan}
+            type="button"
+            aria-pressed={paperOn[plan]}
+            onClick={() => setPaperOn(plan, !paperOn[plan])}
+            className={`min-h-11 rounded-md px-3 text-sm ${paperOn[plan] ? "bg-brass text-on-brass" : "border border-rule bg-panel-2 text-ink"}`}
+          >
+            Papier {paperLabel(plan)}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-mist">
+        Ces quatre boutons ne concernent que le papier. Chacun a son encaisse de 1 000 $ et son historique. Le réel suit Inverser, Paire et Stop.
+      </p>
       <button
         type="button"
         onClick={() => reset()}
         className="mt-4 min-h-11 text-sm text-mist underline-offset-4 hover:text-ink hover:underline"
       >
-        Remettre l'encaisse à {formatUsd(STARTING_CASH, 0)}
+        Rendre les mises papier ouvertes
       </button>
       <p className="mt-2 text-xs leading-relaxed text-mist">
         {mode === "live"
@@ -1490,19 +1553,19 @@ function Portfolio({
 }
 
 function Journal({
-  trades,
-  open,
+  books,
+  paperOn,
   liveFills,
   nowSec,
 }: {
-  trades: PaperTrade[];
-  open: OpenPosition | null;
+  books: ReturnType<typeof useDesk.getState>["books"];
+  paperOn: Record<PaperPlan, boolean>;
   liveFills: LiveFill[];
   nowSec: number;
 }) {
   return (
     <section className="mt-3 grid items-start gap-3 lg:grid-cols-2">
-      <article className="rounded-lg border border-rule bg-panel p-4">
+      <article className="rounded-lg border border-rule bg-panel p-4 lg:col-span-2">
         <h2 className="text-sm font-medium text-ink">Historique réel</h2>
         {liveFills.length === 0 ? (
           <p className="mt-3 text-sm text-mist">Aucun ordre réel pour l'instant.</p>
@@ -1550,50 +1613,78 @@ function Journal({
           </ul>
         )}
       </article>
-      <article className="rounded-lg border border-rule bg-panel p-4">
-        <h2 className="text-sm font-medium text-ink">Historique papier</h2>
-        {open == null && trades.length === 0 ? (
-          <p className="mt-3 text-sm text-mist">Aucun trade papier pour l'instant.</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-rule">
-            {open ? (
-              <li className="flex flex-wrap items-baseline justify-between gap-2 py-3">
-                <div>
-                  <p className="text-sm text-ink">
-                    {open.side} · {formatCents(open.ask)} · modèle {formatProb(open.pModel)}
-                  </p>
-                  <p className="font-mono text-xs text-mist">{formatTime(open.openedAt)}</p>
-                  {open.entry ? <p className="font-mono text-xs text-mist">{open.entry}</p> : null}
-                </div>
-                <p className="font-mono text-sm text-mist">en cours</p>
-              </li>
-            ) : null}
-            {trades.map((trade) => (
-              <li key={trade.id} className="flex flex-wrap items-baseline justify-between gap-2 py-3">
-                <div>
-                  <p className="text-sm text-ink">
-                    {trade.side} · {formatCents(trade.ask)} ·{" "}
-                    {trade.status === "void"
-                      ? "fenêtre manquée, mise rendue"
-                      : trade.status === "win"
-                        ? "gagné"
-                        : "perdu"}
-                  </p>
-                  <p className="font-mono text-xs text-mist">{formatTime(trade.openedAt)}</p>
-                  {trade.entry ? <p className="font-mono text-xs text-mist">{trade.entry}</p> : null}
-                </div>
-                <p
-                  className={`font-mono text-sm ${
-                    trade.pnl > 0 ? "text-up" : trade.pnl < 0 ? "text-down" : "text-mist"
-                  }`}
-                >
-                  {formatSignedUsd(trade.pnl)}
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </article>
+      {PAPER_PLANS.map((plan) => (
+        <PaperHistory key={plan} plan={plan} book={books[plan]} on={paperOn[plan]} />
+      ))}
     </section>
+  );
+}
+
+function PaperHistory({
+  plan,
+  book,
+  on,
+}: {
+  plan: PaperPlan;
+  book: { cash: number; trades: PaperTrade[]; open: OpenPosition | null };
+  on: boolean;
+}) {
+  const pnl = book.cash - STARTING_CASH;
+  return (
+    <article className="rounded-lg border border-rule bg-panel p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-sm font-medium text-ink">
+          {paperLabel(plan)}
+          {on ? "" : " · en pause"}
+        </h2>
+        <p className={`font-mono text-sm ${pnl >= 0 ? "text-up" : "text-down"}`}>
+          {formatUsd(book.cash, 2)} · {formatSignedUsd(pnl)}
+        </p>
+      </div>
+      {book.open == null && book.trades.length === 0 ? (
+        <p className="mt-3 text-sm text-mist">Aucun trade pour l'instant.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-rule">
+          {book.open ? (
+            <li className="flex flex-wrap items-baseline justify-between gap-2 py-3">
+              <div>
+                <p className="text-sm text-ink">
+                  {book.open.side} · {formatCents(book.open.ask)}
+                  {book.open.hedge ? ` + ${book.open.hedge.side} ${formatCents(book.open.hedge.ask)}` : ""}
+                </p>
+                <p className="font-mono text-xs text-mist">{formatTime(book.open.openedAt)}</p>
+                {book.open.entry ? <p className="font-mono text-xs text-mist">{book.open.entry}</p> : null}
+              </div>
+              <p className="font-mono text-sm text-mist">{book.open.hedge ? "deux côtés" : "en cours"}</p>
+            </li>
+          ) : null}
+          {book.trades.map((trade) => (
+            <li key={trade.id} className="flex flex-wrap items-baseline justify-between gap-2 py-3">
+              <div>
+                <p className="text-sm text-ink">
+                  {trade.side} · {formatCents(trade.ask)} ·{" "}
+                  {trade.exit === "stop"
+                    ? "stop"
+                    : trade.status === "void"
+                      ? "fenêtre manquée, mise rendue"
+                      : trade.hedged
+                        ? trade.status === "win"
+                          ? "double gagné"
+                          : "double perdu"
+                        : trade.status === "win"
+                          ? "gagné"
+                          : "perdu"}
+                </p>
+                <p className="font-mono text-xs text-mist">{formatTime(trade.openedAt)}</p>
+                {trade.entry ? <p className="font-mono text-xs text-mist">{trade.entry}</p> : null}
+              </div>
+              <p className={`font-mono text-sm ${trade.pnl > 0 ? "text-up" : trade.pnl < 0 ? "text-down" : "text-mist"}`}>
+                {formatSignedUsd(trade.pnl)}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </article>
   );
 }

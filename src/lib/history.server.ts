@@ -17,6 +17,8 @@ export type HistoryFile = {
   earlyPct: number;
   invert: boolean;
   mode: "paper" | "live";
+  books?: unknown;
+  paperOn?: unknown;
 };
 
 function asList(value: unknown): { id: string; openedAt: number }[] {
@@ -46,6 +48,8 @@ export function normalizeHistory(raw: unknown): HistoryFile | null {
     earlyPct: typeof row.earlyPct === "number" ? row.earlyPct : 75,
     invert: row.invert === true,
     mode: row.mode === "live" ? "live" : "paper",
+    books: row.books && typeof row.books === "object" ? row.books : undefined,
+    paperOn: row.paperOn && typeof row.paperOn === "object" ? row.paperOn : undefined,
   };
 }
 
@@ -54,6 +58,38 @@ function mergeById<T extends { id: string; openedAt: number }>(current: T[], old
   for (const item of older) map.set(item.id, item);
   for (const item of current) map.set(item.id, item);
   return [...map.values()].sort((a, b) => b.openedAt - a.openedAt).slice(0, 200);
+}
+
+const PAPER_PLAN_IDS = ["direct", "inverse", "stop", "double"] as const;
+
+function countHistory(file: HistoryFile): number {
+  const books = file.books as Record<string, { trades?: unknown[] }> | undefined;
+  const bookCount = books
+    ? PAPER_PLAN_IDS.reduce(
+        (sum, plan) => sum + (Array.isArray(books[plan]?.trades) ? books[plan].trades.length : 0),
+        0,
+      )
+    : 0;
+  return bookCount + file.trades.length + file.liveFills.length;
+}
+
+function mergeHistoryBooks(current: unknown, older: unknown): unknown {
+  if (current == null && older == null) return undefined;
+  const left = (current ?? {}) as Record<string, { trades?: { id: string; openedAt: number }[]; open?: unknown; enteredWindow?: number | null; cash?: number }>;
+  const right = (older ?? {}) as typeof left;
+  const out: Record<string, unknown> = {};
+  for (const plan of PAPER_PLAN_IDS) {
+    const a = left[plan];
+    const b = right[plan];
+    if (!a && !b) continue;
+    out[plan] = {
+      trades: mergeById(a?.trades ?? [], b?.trades ?? []),
+      open: a?.open ?? b?.open ?? null,
+      enteredWindow: a?.enteredWindow ?? b?.enteredWindow ?? null,
+      cash: typeof a?.cash === "number" ? a.cash : b?.cash,
+    };
+  }
+  return out;
 }
 
 export function loadHistory(): HistoryFile | null {
@@ -68,13 +104,15 @@ export function storeHistory(raw: unknown): { ok: boolean } {
   const next = normalizeHistory(raw);
   if (!next) return { ok: false };
   const prev = loadHistory();
-  const nextCount = next.trades.length + next.liveFills.length;
-  const prevCount = prev ? prev.trades.length + prev.liveFills.length : 0;
+  const nextCount = countHistory(next);
+  const prevCount = prev ? countHistory(prev) : 0;
   if (nextCount === 0 && prevCount > 0) return { ok: false };
   const merged: HistoryFile = {
     ...next,
     trades: mergeById(next.trades, prev?.trades ?? []),
     liveFills: mergeById(next.liveFills, prev?.liveFills ?? []),
+    books: mergeHistoryBooks(next.books, prev?.books),
+    paperOn: next.paperOn ?? prev?.paperOn,
   };
   mkdirSync(dirname(FILE), { recursive: true });
   writeFileSync(FILE, JSON.stringify(merged));

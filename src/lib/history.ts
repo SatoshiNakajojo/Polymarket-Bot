@@ -14,6 +14,35 @@ export type HistoryFile = {
   earlyPct: number;
   invert: boolean;
   mode: "paper" | "live";
+  books?: {
+    direct?: HistoryBook;
+    inverse?: HistoryBook;
+    stop?: HistoryBook;
+    double?: HistoryBook;
+  };
+  paperOn?: { direct?: boolean; inverse?: boolean; stop?: boolean; double?: boolean };
+};
+
+type HistoryBook = {
+  cash: number;
+  trades: { id: string; openedAt: number }[];
+  open: {
+    id: string;
+    windowStart: number;
+    side: string;
+    ask: number;
+    shares: number;
+    cost: number;
+    fee: number;
+    pModel: number;
+    ev: number;
+    openedAt: number;
+    strike: number;
+    entry?: string;
+    btc?: number;
+    hedge?: { side: string; ask: number; shares: number; cost: number; fee: number } | null;
+  } | null;
+  enteredWindow: number | null;
 };
 
 export const readHistory = createServerFn({ method: "POST" }).handler(async (): Promise<HistoryFile | null> => {
