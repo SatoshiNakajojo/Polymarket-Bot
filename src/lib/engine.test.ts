@@ -55,7 +55,7 @@ test("fair probability rises when price holds above the TWAP breakeven", () => {
 
 test("bot buys the cheap side of a clear edge and waits when early", () => {
   const base = {
-    pUp: 0.8,
+    pUp: 0.72,
     up: { bid: 0.6, ask: 0.62, askSize: 100 },
     down: { bid: 0.38, ask: 0.4, askSize: 80 },
     stakeUsd: 10,

@@ -29,6 +29,40 @@ import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
 import { STARTING_CASH, adoptSaved, currentSaved, paperLabel, PAPER_PLANS, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperPlan, type PaperTrade } from "@/lib/store";
 
+const ORDER_GAP_MS = 2000;
+const MAX_ENTRY_TRIES = 3;
+
+type PaperJob = {
+  kind: "entry" | "stop" | "hedge" | "flip" | "flipBuy";
+  readyAt: number;
+  tries: number;
+  windowStart: number;
+  side: Side;
+  maxPrice: number;
+  minPrice: number;
+  stake: number;
+  entry: string;
+  pModel: number;
+  ev: number;
+};
+
+function paperBuy(
+  ask: number | null,
+  askSize: number | null,
+  maxPrice: number,
+  budget: number,
+  minSize: number,
+  feeRate: number,
+) {
+  if (ask == null || !(ask > 0) || ask > maxPrice + 1e-9) return null;
+  const capShares = askSize == null ? budget / ask : Math.min(budget / ask, askSize);
+  const shares = Math.floor(capShares * 100) / 100;
+  const notional = shares * ask;
+  if (!(shares >= minSize) || notional < 1) return null;
+  const fee = shares * takerFeePerShare(ask, feeRate);
+  return { shares, fee, cost: notional + fee, ask };
+}
+
 function planTag(plan: PaperPlan): string {
   if (plan === "inverse") return "inversé";
   if (plan === "inverseStop") return "invstop";
@@ -82,6 +116,7 @@ export function Desk() {
   const session = useSyncExternalStore(subscribeLive, getLiveSession, () => null);
   const placing = useRef(false);
   const tries = useRef({ window: 0, n: 0, at: 0, side: "Up" as Side, ask: 0, entry: "" });
+  const paperJobs = useRef<Partial<Record<PaperPlan, PaperJob>>>({});
   const diskReady = useRef(false);
 
   useLayoutEffect(() => {
@@ -478,50 +513,136 @@ export function Desk() {
     if (useDesk.getState().mode !== "paper" || !market) return;
     const triggerPct = Math.round(Math.max(market.up.ask ?? 0, market.down.ask ?? 0) * 100);
     const elapsed = Math.max(0, nowSec - snap.live.start);
+    const clock = Date.now();
     for (const plan of PAPER_PLANS) {
       const now = useDesk.getState();
-      if (!now.paperOn[plan]) continue;
+      if (!now.paperOn[plan]) {
+        delete paperJobs.current[plan];
+        continue;
+      }
       const book = now.books[plan];
       const stops = plan === "stop" || plan === "inverseStop" || plan === "flip";
       const inverts = plan === "inverse" || plan === "inverseStop";
+      let job = paperJobs.current[plan];
+      if (job && job.windowStart !== snap.live.start) {
+        delete paperJobs.current[plan];
+        job = undefined;
+      }
+      if (job && clock < job.readyAt) continue;
+      if (job) {
+        if (job.kind === "entry") {
+          const quote = job.side === "Up" ? market.up : market.down;
+          const fill = paperBuy(quote.ask, quote.askSize, job.maxPrice, job.stake, snap.minOrderSize, snap.feeRate);
+          if (fill && fill.cost <= book.cash) {
+            delete paperJobs.current[plan];
+            useDesk.getState().enterBook(plan, {
+              id: `${snap.live.start}-${plan}-${job.side}`,
+              windowStart: snap.live.start,
+              side: job.side,
+              ask: fill.ask,
+              shares: fill.shares,
+              cost: fill.cost,
+              fee: fill.fee,
+              pModel: job.pModel,
+              ev: job.ev,
+              openedAt: clock,
+              strike: snap.live.strike,
+              btc: snap.price,
+              entry: job.entry,
+            });
+          } else if (job.tries >= MAX_ENTRY_TRIES) {
+            delete paperJobs.current[plan];
+            useDesk.getState().holdBook(plan, job.windowStart);
+          } else {
+            paperJobs.current[plan] = { ...job, tries: job.tries + 1, readyAt: clock + ORDER_GAP_MS };
+          }
+          continue;
+        }
+        if (job.kind === "stop" || job.kind === "flip") {
+          const open = book.open;
+          const bid = open ? (open.side === "Up" ? market.up.bid : market.down.bid) : null;
+          if (!open || open.hedge || open.flipped || bid == null || bid + 1e-9 < job.minPrice || open.shares < snap.minOrderSize) {
+            paperJobs.current[plan] = { ...job, readyAt: clock + ORDER_GAP_MS };
+            continue;
+          }
+          if (job.kind === "stop") {
+            delete paperJobs.current[plan];
+            useDesk.getState().stopBook(plan, bid, snap.feeRate);
+            continue;
+          }
+          useDesk.getState().stopBook(plan, bid, snap.feeRate);
+          paperJobs.current[plan] = { ...job, kind: "flipBuy", readyAt: clock + ORDER_GAP_MS };
+          continue;
+        }
+        if (job.kind === "flipBuy") {
+          const quote = job.side === "Up" ? market.up : market.down;
+          const fill = paperBuy(quote.ask, quote.askSize, job.maxPrice, job.stake, snap.minOrderSize, snap.feeRate);
+          const cash = useDesk.getState().books[plan].cash;
+          delete paperJobs.current[plan];
+          if (fill && fill.cost <= cash) {
+            useDesk.getState().coverBook(plan, {
+              id: `${snap.live.start}-flip-${job.side}`,
+              windowStart: job.windowStart,
+              side: job.side,
+              ask: fill.ask,
+              shares: fill.shares,
+              cost: fill.cost,
+              fee: fill.fee,
+              pModel: job.pModel,
+              ev: 0,
+              openedAt: clock,
+              strike: snap.live.strike,
+              btc: snap.price,
+              flipped: true,
+              plan: "flip",
+              entry: job.entry,
+            });
+          }
+          continue;
+        }
+        const open = book.open;
+        const otherAsk = open ? (job.side === "Up" ? market.up.ask : market.down.ask) : null;
+        const otherSize = open ? (job.side === "Up" ? market.up.askSize : market.down.askSize) : null;
+        const stillLocked =
+          open != null &&
+          !open.hedge &&
+          otherAsk != null &&
+          otherAsk <= job.maxPrice + 1e-9 &&
+          pairLock(open.ask, otherAsk, snap.feeRate) >= PAIR_MIN &&
+          (otherSize == null || otherSize + 1e-9 >= open.shares);
+        if (!stillLocked || !open) {
+          delete paperJobs.current[plan];
+        } else {
+          const fee = open.shares * takerFeePerShare(otherAsk, snap.feeRate);
+          const cost = open.shares * otherAsk + fee;
+          if (open.shares >= snap.minOrderSize && cost <= book.cash) {
+            delete paperJobs.current[plan];
+            useDesk.getState().hedgeBook(plan, { side: job.side, ask: otherAsk, shares: open.shares, cost, fee });
+          } else {
+            paperJobs.current[plan] = { ...job, readyAt: clock + ORDER_GAP_MS };
+          }
+        }
+        continue;
+      }
       if (stops && book.open?.btc != null && !book.open.hedge && !book.open.flipped) {
         const crossed = book.open.side === "Up" ? snap.price < book.open.btc : snap.price > book.open.btc;
         const bid = book.open.side === "Up" ? market.up.bid : market.down.bid;
         if (crossed && bid != null) {
-          if (plan === "flip") {
-            const otherSide = book.open.side === "Up" ? "Down" : "Up";
-            const otherAsk = otherSide === "Up" ? market.up.ask : market.down.ask;
-            let next: OpenPosition | null = null;
-            if (otherAsk != null && otherAsk > 0) {
-              const stake2 = now.stakeUsd * 2;
-              const shares = Math.floor((stake2 / otherAsk) * 100) / 100;
-              const fee = shares * takerFeePerShare(otherAsk, snap.feeRate);
-              const cost = shares * otherAsk + fee;
-              const cashAfter = book.cash + book.open.shares * bid;
-              if (shares >= snap.minOrderSize && cost <= cashAfter) {
-                next = {
-                  id: `${snap.live.start}-flip-${otherSide}`,
-                  windowStart: book.open.windowStart,
-                  side: otherSide,
-                  ask: otherAsk,
-                  shares,
-                  cost,
-                  fee,
-                  pModel: otherSide === "Up" ? fair.pUp : 1 - fair.pUp,
-                  ev: 0,
-                  openedAt: Date.now(),
-                  strike: snap.live.strike,
-                  btc: snap.price,
-                  flipped: true,
-                  plan: "flip",
-                  entry: entryNote(elapsed, triggerPct, now.earlyPct, "flip"),
-                };
-              }
-            }
-            now.flipBook(plan, bid, next);
-          } else {
-            now.stopBook(plan, bid);
-          }
+          const otherSide = book.open.side === "Up" ? "Down" : "Up";
+          const otherAsk = otherSide === "Up" ? market.up.ask : market.down.ask;
+          paperJobs.current[plan] = {
+            kind: plan === "flip" ? "flip" : "stop",
+            readyAt: clock + ORDER_GAP_MS,
+            tries: 1,
+            windowStart: book.open.windowStart,
+            side: otherSide,
+            maxPrice: Math.min(0.99, Math.floor(((otherAsk ?? 0.99) + 0.01 + 1e-9) * 100) / 100),
+            minPrice: Math.max(0.01, Math.floor((bid - 0.01 + 1e-9) * 100) / 100),
+            stake: now.stakeUsd * 2,
+            entry: entryNote(elapsed, triggerPct, now.earlyPct, plan),
+            pModel: otherSide === "Up" ? fair.pUp : 1 - fair.pUp,
+            ev: 0,
+          };
           continue;
         }
       }
@@ -529,12 +650,20 @@ export function Desk() {
         const otherSide = book.open.side === "Up" ? "Down" : "Up";
         const otherAsk = otherSide === "Up" ? market.up.ask : market.down.ask;
         if (otherAsk != null && pairLock(book.open.ask, otherAsk, snap.feeRate) >= PAIR_MIN) {
-          const shares = book.open.shares;
-          const fee = shares * takerFeePerShare(otherAsk, snap.feeRate);
-          const cost = shares * otherAsk + fee;
-          if (shares >= snap.minOrderSize && cost <= book.cash) {
-            now.hedgeBook(plan, { side: otherSide, ask: otherAsk, shares, cost, fee });
-          }
+          paperJobs.current[plan] = {
+            kind: "hedge",
+            readyAt: clock + ORDER_GAP_MS,
+            tries: 1,
+            windowStart: book.open.windowStart,
+            side: otherSide,
+            maxPrice: Math.min(0.99, Math.floor((otherAsk + 0.01 + 1e-9) * 100) / 100),
+            minPrice: 0.01,
+            stake: 0,
+            entry: "double · deuxième côté",
+            pModel: 0,
+            ev: 0,
+          };
+          continue;
         }
       }
       const current = useDesk.getState().books[plan];
@@ -558,24 +687,26 @@ export function Desk() {
         invert: inverts,
         earlyPrice: now.earlyPct / 100,
       });
-      if (choice.action !== "buy" || !choice.side || choice.ask == null || choice.shares == null || choice.cost == null || choice.fee == null || choice.ev == null) {
-        continue;
-      }
-      useDesk.getState().enterBook(plan, {
-        id: `${snap.live.start}-${plan}-${choice.side}`,
+      if (choice.action !== "buy" || !choice.side || choice.ask == null || choice.ev == null) continue;
+      const pModel = choice.side === "Up" ? fair.pUp : 1 - fair.pUp;
+      const edged = Math.floor((maxAskForEdge(pModel, now.minEdge, snap.feeRate) + 1e-9) * 100) / 100;
+      const maxPrice = inverts
+        ? Math.min(0.8, Math.floor((choice.ask + 0.01 + 1e-9) * 100) / 100)
+        : Math.min(0.8, edged);
+      if (maxPrice + 1e-9 < choice.ask) continue;
+      paperJobs.current[plan] = {
+        kind: "entry",
+        readyAt: clock + ORDER_GAP_MS,
+        tries: 1,
         windowStart: snap.live.start,
         side: choice.side,
-        ask: choice.ask,
-        shares: choice.shares,
-        cost: choice.cost,
-        fee: choice.fee,
-        pModel: choice.side === "Up" ? fair.pUp : 1 - fair.pUp,
-        ev: choice.ev,
-        openedAt: Date.now(),
-        strike: snap.live.strike,
-        btc: snap.price,
+        maxPrice,
+        minPrice: 0.01,
+        stake: now.stakeUsd,
         entry: entryNote(elapsed, triggerPct, now.earlyPct, plan),
-      });
+        pModel,
+        ev: choice.ev,
+      };
     }
   }, [snap, hydrated, armed, stakeUsd, minEdge, lossCap, nowSec, mode, liveArmed, session]);
 
@@ -1146,7 +1277,7 @@ function Controls({
       <p className="mt-2 text-xs leading-relaxed text-mist">
         {mode === "live"
           ? "En réel, une seule stratégie à la fois. Normal : le modèle. Inversé : le contraire. Stop : normal, vendu si le BTC repasse le prix d'entrée. Double : un côté, puis l'autre si l'écart paie. Inversé + stop : l'inversé avec ce stop. Stop x2 : normal avec stop, et si le stop part, l'autre côté à deux fois la mise."
-          : "En papier, les stratégies allumées tournent ensemble. Normal : le modèle. Inversé : le contraire. Stop : normal, vendu si le BTC repasse le prix d'entrée. Double : un côté, puis l'autre si l'écart paie. Inversé + stop : l'inversé avec ce stop. Stop x2 : normal avec stop, et si le stop part, l'autre côté à deux fois la mise."}
+          : "En papier, les stratégies allumées tournent ensemble, avec les mêmes règles qu'en réel : 2 s entre les ordres, 3 essais, frais taker à l'achat et à la revente, et l'ordre rate si le prix est parti ou s'il n'y a pas assez de parts. Normal : le modèle. Inversé : le contraire. Stop : normal, vendu si le BTC repasse le prix d'entrée. Double : un côté, puis l'autre si l'écart paie. Inversé + stop : l'inversé avec ce stop. Stop x2 : normal avec stop, et si le stop part, l'autre côté à deux fois la mise."}
       </p>
       <button
         type="button"

@@ -68,12 +68,13 @@ export function maxAskForEdge(prob: number, minEdge: number, feeRate = FEE_RATE)
   return Math.min(0.99, Math.max(0.01, ask));
 }
 
-/** Win pays 1$ per share. The stake is the price paid; the fee is on top. */
+/** Win pays 1$ per share. The stake is the price paid; the taker fee is on top, win or loss. */
 export function settlementPnl(stake: number, ask: number, won: boolean, feeRate = FEE_RATE): number {
   if (!(stake > 0)) return 0;
-  if (!won || !(ask > 0)) return -stake;
-  const shares = stake / ask;
-  return shares - stake - shares * takerFeePerShare(ask, feeRate);
+  const shares = ask > 0 ? stake / ask : 0;
+  const fee = shares * takerFeePerShare(ask, feeRate);
+  if (!won || !(ask > 0)) return -(stake + fee);
+  return shares - stake - fee;
 }
 
 export type Fair = { pUp: number; breakeven: number; z: number };

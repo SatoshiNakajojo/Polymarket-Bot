@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Side } from "@/lib/engine";
+import { takerFeePerShare, type Side } from "@/lib/engine";
 
 export const STARTING_CASH = 1000;
 
@@ -239,8 +239,10 @@ type DeskState = {
   enterBook: (plan: PaperPlan, position: OpenPosition) => void;
   settleBook: (plan: PaperPlan, windowStart: number, outcome: Side, twap: number) => void;
   voidBook: (plan: PaperPlan, windowStart: number) => void;
-  stopBook: (plan: PaperPlan, bid: number) => void;
-  flipBook: (plan: PaperPlan, bid: number, next: OpenPosition | null) => void;
+  stopBook: (plan: PaperPlan, bid: number, feeRate: number) => void;
+  flipBook: (plan: PaperPlan, bid: number, feeRate: number, next: OpenPosition | null) => void;
+  holdBook: (plan: PaperPlan, windowStart: number) => void;
+  coverBook: (plan: PaperPlan, position: OpenPosition) => void;
   hedgeBook: (plan: PaperPlan, hedge: NonNullable<OpenPosition["hedge"]>) => void;
   reset: () => void;
 };
@@ -383,12 +385,13 @@ export const useDesk = create<DeskState>()((set, get) => ({
           }),
         );
       },
-      stopBook: (plan, bid) => {
+      stopBook: (plan, bid, feeRate) => {
         const state = get();
         const book = state.books[plan];
         const open = book.open;
         if (!open || open.hedge) return;
-        const payout = open.shares * bid;
+        const exitFee = open.shares * takerFeePerShare(bid, feeRate);
+        const payout = Math.max(0, open.shares * bid - exitFee);
         const trade: PaperTrade = {
           ...open,
           status: payout >= open.cost ? "win" : "loss",
@@ -406,12 +409,13 @@ export const useDesk = create<DeskState>()((set, get) => ({
           }),
         );
       },
-      flipBook: (plan, bid, next) => {
+      flipBook: (plan, bid, feeRate, next) => {
         const state = get();
         const book = state.books[plan];
         const open = book.open;
         if (!open || open.hedge || open.flipped) return;
-        const payout = open.shares * bid;
+        const exitFee = open.shares * takerFeePerShare(bid, feeRate);
+        const payout = Math.max(0, open.shares * bid - exitFee);
         const trade: PaperTrade = {
           ...open,
           status: payout >= open.cost ? "win" : "loss",
@@ -432,6 +436,24 @@ export const useDesk = create<DeskState>()((set, get) => ({
             open: opened,
             enteredWindow: book.enteredWindow,
             trades: [trade, ...book.trades].slice(0, 200),
+          }),
+        );
+      },
+      holdBook: (plan, windowStart) => {
+        const state = get();
+        const book = state.books[plan];
+        if (book.open || book.enteredWindow === windowStart) return;
+        set(mirror(state, plan, { ...book, enteredWindow: windowStart }));
+      },
+      coverBook: (plan, position) => {
+        const state = get();
+        const book = state.books[plan];
+        if (book.open || position.cost > book.cash) return;
+        set(
+          mirror(state, plan, {
+            ...book,
+            open: { ...position, plan, flipped: true },
+            cash: book.cash - position.cost,
           }),
         );
       },
