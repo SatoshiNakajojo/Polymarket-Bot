@@ -3,7 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Fenêtre";
+const APP_NAME = import.meta.env.VITE_BOT_TITLE || "MAC POLY BOT";
 
 export const Route = createRootRoute({
   head: () => ({
