@@ -120,12 +120,10 @@ function readSaved(): Partial<SavedDesk> | null {
 function writeSaved(state: DeskState) {
   if (typeof window === "undefined" || !state.hydrated) return;
   try {
-    const next = savedSlice(state);
-    const nextCount = next.trades.length + next.liveFills.length;
     const existing = readSaved();
-    const prevCount = (existing?.trades?.length ?? 0) + (existing?.liveFills?.length ?? 0);
-    if (nextCount === 0 && prevCount > 0) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    const trades = mergeById(state.trades, Array.isArray(existing?.trades) ? existing.trades : []);
+    const liveFills = mergeById(state.liveFills, Array.isArray(existing?.liveFills) ? existing.liveFills : []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...savedSlice(state), trades, liveFills }));
   } catch {
     /* Le navigateur peut refuser le stockage. L'historique reste affiché. */
   }

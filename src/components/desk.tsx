@@ -29,12 +29,19 @@ import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
 import { STARTING_CASH, adoptSaved, currentSaved, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperTrade } from "@/lib/store";
 
-function entryNote(elapsedSec: number, triggerPct: number, earlyPct: number, invert: boolean): string {
+function entryNote(
+  elapsedSec: number,
+  triggerPct: number,
+  earlyPct: number,
+  invert: boolean,
+  plan: "stop" | "double" | "direct",
+): string {
   const whole = Math.max(0, Math.floor(elapsedSec));
   const minutes = Math.floor(whole / 60);
   const seconds = whole % 60;
   const when = minutes > 0 ? `${minutes} min ${String(seconds).padStart(2, "0")} s` : `${seconds} s`;
-  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${invert ? "inversé" : "normal"}`;
+  const mode = plan === "double" ? "double" : plan === "stop" ? "stop" : "direct";
+  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${invert ? "inversé" : "normal"} · ${mode}`;
 }
 
 function useNowSec(serverNow: number | null): number {
@@ -99,11 +106,23 @@ export function Desk() {
   }, []);
 
   useEffect(() => {
+    const flush = () => {
+      if (!useDesk.getState().hydrated) return;
+      void saveHistory({ data: currentSaved() as HistoryFile });
+    };
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, []);
+
+  useEffect(() => {
     if (!hydrated || !diskReady.current) return;
     const id = window.setTimeout(() => {
       void saveHistory({ data: currentSaved() as HistoryFile });
     }, 400);
-    return () => window.clearTimeout(id);
+    return () => {
+      window.clearTimeout(id);
+      if (useDesk.getState().hydrated) void saveHistory({ data: currentSaved() as HistoryFile });
+    };
   }, [hydrated, trades, liveFills, cash, open, mode, stakeUsd, minEdge, lossCap, entryWaitMin, earlyPct, invert, armed]);
 
   useEffect(() => {
@@ -246,7 +265,7 @@ export function Desk() {
                 detail: result.ok
                   ? `Couverture · ${Math.round(pairLock(solo.ask, otherAsk, snap.feeRate) * 100)} c verrouillés`
                   : result.message,
-                entry: "paire",
+                entry: "double · deuxième côté",
               });
             })
             .catch((error: unknown) => {
@@ -260,7 +279,7 @@ export function Desk() {
                 status: "rejected",
                 orderId: null,
                 detail: error instanceof Error ? error.message : "Couverture refusée.",
-                entry: "paire",
+                entry: "double · deuxième côté",
               });
             })
             .finally(() => {
@@ -356,7 +375,13 @@ export function Desk() {
       const maxPrice = fresh.invert ? Math.min(0.8, Math.floor((ask + 0.01 + 1e-9) * 100) / 100) : Math.min(0.8, edged);
       if (maxPrice + 1e-9 < ask) return;
       const triggerPct = Math.round(Math.max(market?.up.ask ?? 0, market?.down.ask ?? 0) * 100);
-      const entry = entryNote(Math.max(0, nowSec - snap.live.start), triggerPct, fresh.earlyPct, fresh.invert);
+      const entry = entryNote(
+        Math.max(0, nowSec - snap.live.start),
+        triggerPct,
+        fresh.earlyPct,
+        fresh.invert,
+        fresh.pair ? "double" : fresh.btcStop ? "stop" : "direct",
+      );
       placing.current = true;
       tries.current.n += 1;
       tries.current.at = Date.now();
@@ -442,6 +467,7 @@ export function Desk() {
           Math.round(Math.max(market?.up.ask ?? 0, market?.down.ask ?? 0) * 100),
           fresh.earlyPct,
           fresh.invert,
+          fresh.pair ? "double" : fresh.btcStop ? "stop" : "direct",
         ),
       };
       fresh.enter(position);
