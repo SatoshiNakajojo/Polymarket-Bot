@@ -19,6 +19,7 @@ function row(elapsed: number, spot: number, upBid: number, upAsk: number, up: 0 
     upSize: 100,
     downBid: Math.round((1 - upAsk) * 100) / 100,
     downAsk: Math.round((1 - upBid) * 100) / 100,
+    downSize: 100,
     feeRate: 0.07,
     upBidSize: 100,
     upBidDepth: 100,
@@ -77,4 +78,12 @@ test("groupWindows relie chaque fenêtre au résultat de la précédente", () =>
   const [w1, w2] = groupWindows([b, a]);
   assert.equal(w1.previousUp, null);
   assert.equal(w2.previousUp, 1);
+});
+
+test("on n'achète pas plus que la quantité affichée au meilleur prix", () => {
+  const thin = { ...row(60, 110, 0.98, 0.99, 0), downAsk: 0.01, downSize: 100 };
+  const w = win([thin], 0);
+  const r = runStops(w, "instant", { i: 0, side: "Down" }, 0, 1, "strike") as { pnl: number; volume: number };
+  assert.ok(Math.abs(r.volume - 1) < 1e-9, "100 parts à 1 c = 1 $, pas 5 $");
+  assert.ok(Math.abs(r.pnl - (100 - 1 - 100 * fee(0.01))) < 1e-9);
 });

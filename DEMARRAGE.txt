@@ -33,3 +33,9 @@ Il ne vaut quelque chose que s'il dit « bat le marché sur des fenêtres jamais
 
 Le backtest des stratégies (Normal, Inversé, Stop, Double, martingale, nouvelles idées) :
    npm run journal:strategies
+
+Le suivi papier 24 h/24 (journal + toutes les stratégies en direct, aucun ordre réel) :
+   npm run paper
+Sur le VPS, pour qu'il tourne en permanence :
+   pm2 start npm --name fenetre-papier -- run paper
+Le tableau des scores est dans data/journal/papier.json.

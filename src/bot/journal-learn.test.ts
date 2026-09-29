@@ -43,6 +43,7 @@ const base: Row = {
   upSize: 100,
   downBid: 0.44,
   downAsk: 0.46,
+  downSize: 100,
   feeRate: 0.07,
   upBidSize: 300,
   upBidDepth: 900,

@@ -14,6 +14,7 @@ export type Row = {
   upSize: number | null;
   downBid: number | null;
   downAsk: number | null;
+  downSize: number | null;
   feeRate: number;
   upBidSize: number | null;
   upBidDepth: number | null;
@@ -24,11 +25,19 @@ export type Row = {
   up: 0 | 1;
 };
 
-export type Journal = { rows: Row[]; windows: number; resolved: number; agree: number; checked: number };
+export type Journal = {
+  rows: Row[];
+  windows: number;
+  resolved: number;
+  agree: number;
+  checked: number;
+  /** Relevés des fenêtres pas encore réglées (up vaut 0 en attendant). */
+  pending: Row[];
+};
 
 const num = (s: string | undefined) => (s == null || s === "" ? null : Number(s));
 
-export function loadJournal(dir: string): Journal {
+export function loadJournal(dir: string, opts: { pending?: boolean } = {}): Journal {
   const outFile = `${dir}/resultats.jsonl`;
   const obsFiles = existsSync(dir)
     ? readdirSync(dir)
@@ -59,6 +68,7 @@ export function loadJournal(dir: string): Journal {
     }
   }
   const rows: Row[] = [];
+  const pending: Row[] = [];
   const seen = new Set<number>();
   for (const file of obsFiles) {
     const [head, ...lines] = readFileSync(file, "utf8").split("\n");
@@ -72,8 +82,8 @@ export function loadJournal(dir: string): Journal {
       seen.add(window);
       const outcome = outcomes.get(window);
       const pModel = num(get("p_model"));
-      if (!outcome || pModel == null) continue;
-      rows.push({
+      if (pModel == null || (!outcome && !opts.pending)) continue;
+      (outcome ? rows : pending).push({
         window,
         elapsed: Number(get("elapsed")),
         remaining: Number(get("remaining")),
@@ -86,6 +96,7 @@ export function loadJournal(dir: string): Journal {
         upSize: num(get("up_size")),
         downBid: num(get("down_bid")),
         downAsk: num(get("down_ask")),
+        downSize: num(get("down_size")),
         feeRate: Number(get("fee_rate")) || 0.07,
         upBidSize: num(get("up_bid_size")),
         upBidDepth: num(get("up_bid_depth")),
@@ -97,8 +108,10 @@ export function loadJournal(dir: string): Journal {
       });
     }
   }
-  rows.sort((a, b) => a.window - b.window || a.elapsed - b.elapsed);
-  return { rows, windows: seen.size, resolved: new Set(rows.map((r) => r.window)).size, agree, checked };
+  const byTime = (a: Row, b: Row) => a.window - b.window || a.elapsed - b.elapsed;
+  rows.sort(byTime);
+  pending.sort(byTime);
+  return { rows, windows: seen.size, resolved: new Set(rows.map((r) => r.window)).size, agree, checked, pending };
 }
 
 /** Milieu du carnet Up, si le carnet est lisible. */

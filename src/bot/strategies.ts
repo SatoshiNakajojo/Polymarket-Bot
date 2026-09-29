@@ -7,7 +7,8 @@ import { decide, fairUp, pairLock, PAIR_MIN, takerFeePerShare, type Side } from 
 import { marketP, type Row } from "./journal-data.ts";
 
 export type Exec = "instant" | "lent";
-export type WindowResult = { pnl: number; volume: number; legs: number };
+/** `trace` = les ordres passés, lisibles (« +62 s · achat Up 5,00 $ à 62 c »). */
+export type WindowResult = { pnl: number; volume: number; legs: number; trace: string[] };
 export type Strategy = {
   key: string;
   label: string;
@@ -28,6 +29,7 @@ class Book {
   volume = 0;
   legs = 0;
   held: Leg[] = [];
+  trace: string[] = [];
   readonly w: WindowRows;
   readonly exec: Exec;
   constructor(w: WindowRows, exec: Exec) {
@@ -43,10 +45,14 @@ class Book {
     const r = this.at(i);
     const ask = r ? askOf(r, side) : null;
     if (!r || ask == null || !(ask > 0) || ask >= 1) return null;
-    const shares = stake / ask;
-    this.cash -= stake + shares * takerFeePerShare(ask, r.feeRate);
-    this.volume += stake;
+    // On ne prend que ce qui est affiché au meilleur prix vendeur.
+    const size = side === "Up" ? r.upSize : r.downSize;
+    const shares = size != null && size > 0 ? Math.min(stake / ask, size) : stake / ask;
+    const paid = shares * ask;
+    this.cash -= paid + shares * takerFeePerShare(ask, r.feeRate);
+    this.volume += paid;
     this.legs += 1;
+    this.note(r, `achat ${side} ${paid.toFixed(2)} $ à ${Math.round(ask * 100)} c`);
     const leg = { side, shares };
     this.held.push(leg);
     return leg;
@@ -57,6 +63,7 @@ class Book {
     this.cash -= shares * ask + shares * takerFeePerShare(ask, r.feeRate);
     this.volume += shares * ask;
     this.legs += 1;
+    this.note(r, `couverture ${side} ${shares.toFixed(2)} parts à ${Math.round(ask * 100)} c`);
     this.held.push({ side, shares });
   }
   sell(i: number, leg: Leg): boolean {
@@ -66,13 +73,17 @@ class Book {
     this.cash += leg.shares * bid - leg.shares * takerFeePerShare(bid, r.feeRate);
     this.volume += leg.shares * bid;
     this.legs += 1;
+    this.note(r, `vente ${leg.side} à ${Math.round(bid * 100)} c`);
     this.held = this.held.filter((l) => l !== leg);
     return true;
+  }
+  note(r: Row, what: string) {
+    this.trace.push(`+${Math.round(r.elapsed)} s · ${what}`);
   }
   settle(): WindowResult {
     const winner: Side = this.w.up === 1 ? "Up" : "Down";
     for (const leg of this.held) if (leg.side === winner) this.cash += leg.shares;
-    return { pnl: this.cash, volume: this.volume, legs: this.legs };
+    return { pnl: this.cash, volume: this.volume, legs: this.legs, trace: this.trace };
   }
 }
 
@@ -250,7 +261,8 @@ function makerBid(at: number, side: "favori" | "outsider") {
       if (ask != null && ask <= price + 1e-9) {
         const shares = STAKE / price;
         const won = (w.up === 1) === (s === "Up");
-        return { pnl: (won ? shares : 0) - STAKE, volume: STAKE, legs: 1 };
+        const trace = [`+${Math.round(w.rows[i].elapsed)} s · ordre limite ${s} rempli à ${Math.round(price * 100)} c`];
+        return { pnl: (won ? shares : 0) - STAKE, volume: STAKE, legs: 1, trace };
       }
     }
     return null;
@@ -390,4 +402,61 @@ export function groupWindows(rows: Row[]): WindowRows[] {
     up: upOf.get(w) as 0 | 1,
     previousUp: upOf.get(w - 300) ?? null,
   }));
+}
+
+export type Summary = {
+  key: string;
+  label: string;
+  exec: Exec;
+  trades: number;
+  winRate: number;
+  total: number;
+  mean: number;
+  se: number;
+  worst: number;
+  drawdown: number;
+  volume: number;
+};
+
+/** Bilan d'une stratégie sur des fenêtres réglées. */
+export function summarize(windows: WindowRows[], s: Strategy, exec: Exec): Summary {
+  const pnls: number[] = [];
+  let volume = 0;
+  let equity = 0;
+  let peak = 0;
+  let drawdown = 0;
+  for (const w of windows) {
+    const r = s.run(w, exec);
+    if (!r) continue;
+    pnls.push(r.pnl);
+    volume += r.volume;
+    equity += r.pnl;
+    peak = Math.max(peak, equity);
+    drawdown = Math.max(drawdown, peak - equity);
+  }
+  const n = pnls.length;
+  const mean = n ? pnls.reduce((a, b) => a + b, 0) / n : Number.NaN;
+  const se = n > 1 ? Math.sqrt(pnls.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) / n) : Number.NaN;
+  return {
+    key: s.key,
+    label: s.label,
+    exec,
+    trades: n,
+    winRate: n ? pnls.filter((p) => p > 0).length / n : 0,
+    total: pnls.reduce((a, b) => a + b, 0),
+    mean,
+    se,
+    worst: n ? Math.min(...pnls) : 0,
+    drawdown,
+    volume,
+  };
+}
+
+/** « POSITIF », « perdant » ou « indistinct », seulement à partir de `minTrades` trades. */
+export function verdictOf(s: Summary, minTrades: number): string {
+  if (s.trades === 0) return "aucun trade";
+  if (s.trades < minTrades) return "trop peu de trades";
+  if (s.mean - 2 * s.se > 0) return "POSITIF";
+  if (s.mean + 2 * s.se < 0) return "perdant";
+  return "indistinct du hasard";
 }

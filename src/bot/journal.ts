@@ -453,4 +453,7 @@ async function main() {
   }
 }
 
-await main();
+export { main as startJournal };
+
+// Lancé directement (npm run journal) : on démarre. Importé (npm run paper) : l'appelant décide.
+if (process.argv[1]?.endsWith("journal.ts")) await main();
