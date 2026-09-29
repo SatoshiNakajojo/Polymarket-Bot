@@ -4,6 +4,7 @@ import {
   bookProblem,
   decide,
   fairUp,
+  maxAskForEdge,
   normalCdf,
   takerFeePerShare,
   windowStartSec,
@@ -18,6 +19,12 @@ test("normal cdf is centered and monotonic", () => {
 test("window start aligns to 5 minutes", () => {
   assert.equal(windowStartSec(1_790_427_269), 1_790_427_000);
   assert.equal(windowStartSec(1_790_427_000), 1_790_427_000);
+});
+
+test("limit price keeps the minimum edge after fees", () => {
+  const ask = maxAskForEdge(0.7, 0.03, 0.07);
+  const fee = 0.07 * ask * (1 - ask);
+  assert.ok(Math.abs(0.7 - ask - fee - 0.03) < 1e-6);
 });
 
 test("taker fee peaks at 50c", () => {
@@ -48,7 +55,7 @@ test("fair probability rises when price holds above the TWAP breakeven", () => {
 
 test("bot buys the cheap side of a clear edge and waits when early", () => {
   const base = {
-    pUp: 0.8,
+    pUp: 0.72,
     up: { bid: 0.6, ask: 0.62, askSize: 100 },
     down: { bid: 0.38, ask: 0.4, askSize: 80 },
     stakeUsd: 10,

@@ -1,7 +1,4 @@
 import { createServerFn } from "@tanstack/react-start";
-import type { Snapshot } from "@/lib/market-types";
-
-export type { Snapshot } from "@/lib/market-types";
 
 export type HeldPosition = {
   conditionId: string;
@@ -12,13 +9,6 @@ export type HeldPosition = {
   redeemable: boolean;
 };
 
-export const getMarketSnapshot = createServerFn({ method: "POST" }).handler(
-  async (): Promise<Snapshot> => {
-    const { loadSnapshot } = await import("./market-data.server");
-    return loadSnapshot();
-  },
-);
-
 export const loadPositions = createServerFn({ method: "POST" })
   .validator((data: { wallet: string }) => {
     if (!/^0x[a-fA-F0-9]{40}$/.test(data.wallet)) throw new Error("Adresse illisible.");
@@ -27,7 +17,7 @@ export const loadPositions = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<HeldPosition[]> => {
     const response = await fetch(
       `https://data-api.polymarket.com/positions?user=${data.wallet}&sizeThreshold=0`,
-      { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8000) },
+      { signal: AbortSignal.timeout(8000) },
     );
     if (!response.ok) throw new Error("Liste des parts indisponible.");
     const rows = (await response.json()) as {

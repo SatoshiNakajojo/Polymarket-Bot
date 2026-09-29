@@ -1,4 +1,5 @@
 import { WINDOW_SEC, windowStartSec, type Quote, type Side } from "@/lib/engine";
+import { chainlinkPrice, chainlinkSamples, ensureChainlink } from "@/lib/chainlink";
 import type { PricePoint, Snapshot, WindowView } from "@/lib/market-types";
 
 export type { Snapshot } from "@/lib/market-types";
@@ -178,6 +179,70 @@ function summarize(
   };
 }
 
+async function loadOpenPrice(start: number): Promise<number | null> {
+  const startIso = new Date(start * 1000).toISOString().replace(".000Z", "Z");
+  const endIso = new Date((start + WINDOW_SEC) * 1000).toISOString().replace(".000Z", "Z");
+  const body = (await getJson(
+    `https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=${encodeURIComponent(startIso)}&variant=fiveminute&endDate=${encodeURIComponent(endIso)}`,
+  )) as { openPrice?: number };
+  return body.openPrice != null && body.openPrice > 0 ? body.openPrice : null;
+}
+
+function fromChainlink(
+  start: number,
+  end: number,
+  now: number,
+  openPrice: number | null,
+  closed: boolean,
+): WindowView | null {
+  const points = chainlinkSamples().filter((sample) => sample.t >= start - 2 && sample.t <= (closed ? end : now) + 1);
+  const live = chainlinkPrice();
+  if (points.length === 0 && !(openPrice != null && openPrice > 0) && !(live != null && live > 0)) return null;
+  const spanEnd = closed ? end : Math.min(now, end);
+  const strike =
+    openPrice && openPrice > 0 ? openPrice : (points.find((sample) => sample.t >= start)?.price ?? live ?? 0);
+  let price = strike;
+  let cursor = start;
+  let acc = 0;
+  const path: PricePoint[] = [];
+  const mark = (t: number, px: number) => {
+    const last = path[path.length - 1];
+    if (!last || t - last.t >= 5) path.push({ t, price: px });
+  };
+  const first = points[0];
+  if (first && first.t > start && strike > 0) {
+    const bridgeEnd = Math.min(first.t, spanEnd);
+    acc += ((strike + first.price) / 2) * (bridgeEnd - start);
+    cursor = bridgeEnd;
+    mark(bridgeEnd, first.price);
+  }
+  for (const sample of points) {
+    const t = Math.min(Math.max(sample.t, start), spanEnd);
+    if (t > cursor && price > 0) {
+      acc += price * (t - cursor);
+      mark(t, price);
+    }
+    cursor = Math.max(cursor, t);
+    price = sample.price;
+  }
+  if (spanEnd > cursor && price > 0) {
+    acc += price * (spanEnd - cursor);
+    mark(spanEnd, price);
+  }
+  const elapsed = Math.max(0, spanEnd - start);
+  const twap = elapsed > 0 && acc > 0 ? acc / elapsed : strike;
+  return {
+    start,
+    end,
+    strike,
+    twap,
+    elapsed,
+    remaining: Math.max(0, end - (closed ? end : now)),
+    complete: closed || now >= end,
+    path,
+  };
+}
+
 function sigmaFrom(candles: Candle[], start: number): number {
   const prior = candles.filter((c) => c.t < start && c.t >= start - 3600);
   const diffs: number[] = [];
@@ -192,7 +257,7 @@ function sigmaFrom(candles: Candle[], start: number): number {
     diffs.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, diffs.length - 1);
   const perSqrtSec = Math.sqrt(Math.max(0, variance)) / Math.sqrt(60);
   if (!Number.isFinite(perSqrtSec)) return 4;
-  return Math.min(25, Math.max(1, perSqrtSec));
+  return Math.min(25, Math.max(3, perSqrtSec));
 }
 
 async function loadSettled(start: number, now: number): Promise<{ start: number; outcome: Side } | null> {
@@ -216,13 +281,13 @@ export async function loadSnapshot(): Promise<Snapshot> {
   const start = windowStartSec(serverNow);
   try {
     const slug = `btc-updown-5m-${start}`;
-    const [price, candles, events, settled] = await Promise.all([
+    const [coinbase, candles, events, settled, liveOpen, previousOpen] = await Promise.all([
       loadBtcPrice(),
       loadCandles(start - 3900, serverNow + 5),
       getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`).catch(() => []),
-      Promise.all(
-        [1, 2, 3, 4, 5, 6].map((n) => loadSettled(start - n * WINDOW_SEC, serverNow)),
-      ),
+      Promise.all([1, 2, 3, 4, 5, 6].map((n) => loadSettled(start - n * WINDOW_SEC, serverNow))),
+      ensureChainlink().then(() => loadOpenPrice(start)).catch(() => null),
+      loadOpenPrice(start - WINDOW_SEC).catch(() => null),
     ]);
 
     const event = Array.isArray(events) ? (events[0] as Record<string, unknown> | undefined) : undefined;
@@ -264,6 +329,14 @@ export async function loadSnapshot(): Promise<Snapshot> {
       }
     }
 
+    const price = chainlinkPrice() ?? coinbase;
+    const live =
+      fromChainlink(start, start + WINDOW_SEC, serverNow, liveOpen, false) ??
+      summarize(candles, start, start + WINDOW_SEC, serverNow, price, false);
+    const previous =
+      fromChainlink(start - WINDOW_SEC, start, serverNow, previousOpen, true) ??
+      summarize(candles, start - WINDOW_SEC, start, serverNow, price, true);
+
     return {
       ok: true,
       serverNow,
@@ -271,15 +344,8 @@ export async function loadSnapshot(): Promise<Snapshot> {
       sigmaPerSqrtSec: sigmaFrom(candles, start),
       feeRate,
       minOrderSize,
-      live: summarize(candles, start, start + WINDOW_SEC, serverNow, price, false),
-      previous: summarize(
-        candles,
-        start - WINDOW_SEC,
-        start,
-        serverNow,
-        price,
-        true,
-      ),
+      live,
+      previous,
       settled: settled.filter((row): row is { start: number; outcome: Side } => row != null),
       market,
     };

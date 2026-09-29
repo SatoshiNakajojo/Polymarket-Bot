@@ -1,8 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connectLive, placeLiveOrder } from "@/lib/live.ts";
-import { readKey } from "./key.ts";
-import { vetOrder, type SpendState } from "./policy.ts";
+import { connectLive, placeLiveOrder, placeLiveSell } from "@/lib/live.ts";
+import { builderFromEnv, readKey } from "./key.ts";
+import { vetOrder, vetSell, type SpendState } from "./policy.ts";
 
 function sameSecret(given: string, expected: string): boolean {
   const a = Buffer.from(given);
@@ -41,9 +41,9 @@ if (token.length < 16) throw new Error("SIGNER_TOKEN doit faire au moins 16 cara
 
 const maxStake = Number(process.env.FENETRE_STAKE ?? 10);
 const lossCap = Number(process.env.FENETRE_CAP ?? 80);
-const state: SpendState = { spent: 0, lastWindow: null };
+const state: SpendState = { spent: 0, lastWindow: null, hedgedWindow: null };
 
-const session = await connectLive(readKey(), process.env.POLY_FUNDER ?? "");
+const session = await connectLive(readKey(), process.env.POLY_FUNDER ?? "", builderFromEnv());
 const host = process.env.SIGNER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SIGNER_PORT ?? 8787);
 
@@ -63,18 +63,36 @@ const server = createServer(async (req, res) => {
         send(res, 400, verdict);
         return;
       }
-      state.lastWindow = verdict.order.windowStart;
       const placed = await placeLiveOrder({
         tokenId: verdict.order.assetId,
         amount: verdict.order.amount,
         maxPrice: verdict.order.maxPrice,
       });
-      if (placed.ok) state.spent += verdict.order.amount;
+      if (placed.ok) {
+        if (verdict.order.hedge) state.hedgedWindow = verdict.order.windowStart;
+        else state.lastWindow = verdict.order.windowStart;
+        state.spent += verdict.order.amount;
+      }
       console.log(
         placed.ok
           ? `envoyé ${verdict.order.slug} ${verdict.order.amount}$ ${placed.orderId}`
           : `refusé ${verdict.order.slug} ${placed.message}`,
       );
+      send(res, placed.ok ? 200 : 422, placed);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/sell") {
+      const verdict = vetSell(await readBody(req));
+      if (!verdict.ok) {
+        send(res, 400, verdict);
+        return;
+      }
+      const placed = await placeLiveSell({
+        tokenId: verdict.sell.assetId,
+        shares: verdict.sell.shares,
+        minPrice: verdict.sell.minPrice,
+      });
+      console.log(placed.ok ? `vendu ${verdict.sell.slug} ${placed.orderId}` : `vente refusée ${placed.message}`);
       send(res, placed.ok ? 200 : 422, placed);
       return;
     }
@@ -87,5 +105,13 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Signer local ${session.wallet} sur ${host}:${port}. La clé ne quitte pas cette machine.`);
+  const localOnly = host === "127.0.0.1" || host === "localhost";
+  console.log(
+    localOnly
+      ? `Signer ${session.wallet} sur ${host}:${port}. Joignable seulement ici. Pour le VPS, SIGNER_HOST = adresse Tailscale du Pi.`
+      : `Signer ${session.wallet} sur ${host}:${port}. La clé ne quitte pas cette machine.`,
+  );
+  if (host === "0.0.0.0" || host === "::") {
+    console.warn("Ouvert sur toutes les interfaces. Réserve ça à Tailscale, jamais à Internet.");
+  }
 });
