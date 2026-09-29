@@ -1790,11 +1790,13 @@ function Journal({
   const stats = PAPER_PLANS.map((plan) => {
     if (view === "paper") {
       const book = books[plan];
-      return { plan, pnl: book.cash - STARTING_CASH, count: book.trades.length, cash: book.cash };
+      const pnl = book.trades.reduce((sum, trade) => sum + trade.pnl, 0);
+      const locked = book.open ? book.open.cost + (book.open.hedge?.cost ?? 0) : 0;
+      return { plan, pnl, count: book.trades.length, cash: STARTING_CASH + pnl, locked };
     }
     const settled = liveFills.filter((fill) => planOfFill(fill) === plan && fillMoney(fill) != null);
     const pnl = settled.reduce((sum, fill) => sum + (fillMoney(fill) ?? 0), 0);
-    return { plan, pnl, count: settled.length, cash: null as number | null };
+    return { plan, pnl, count: settled.length, cash: null as number | null, locked: 0 };
   });
   return (
     <section className="mt-3 rounded-lg border border-rule bg-panel p-4">
@@ -1830,8 +1832,11 @@ function Journal({
             <p className={`font-mono text-sm ${stat.pnl >= 0 ? "text-up" : "text-down"}`}>{formatSignedUsd(stat.pnl)}</p>
             <p className="font-mono text-xs text-mist">
               {stat.count} trade{stat.count > 1 ? "s" : ""}
-              {stat.cash != null ? ` · ${formatUsd(stat.cash, 0)}` : ""}
+              {stat.cash != null ? ` · ${formatUsd(stat.cash, 2)}` : ""}
             </p>
+            {stat.locked > 0 ? (
+              <p className="font-mono text-xs text-mist">mise en cours {formatUsd(stat.locked, 2)}</p>
+            ) : null}
           </button>
         ))}
       </div>
@@ -1861,7 +1866,7 @@ function bookSeries(book: { cash: number; trades: PaperTrade[]; open: OpenPositi
   }
   points.push({
     t: Math.max(now, points[points.length - 1].t + 1),
-    value: Math.round(book.cash * 100) / 100,
+    value: Math.round(value * 100) / 100,
   });
   return points;
 }
