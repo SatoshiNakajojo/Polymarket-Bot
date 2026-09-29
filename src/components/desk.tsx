@@ -29,19 +29,13 @@ import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
 import { STARTING_CASH, adoptSaved, currentSaved, paperLabel, PAPER_PLANS, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperPlan, type PaperTrade } from "@/lib/store";
 
-function entryNote(
-  elapsedSec: number,
-  triggerPct: number,
-  earlyPct: number,
-  invert: boolean,
-  plan: "stop" | "double" | "direct",
-): string {
+function entryNote(elapsedSec: number, triggerPct: number, earlyPct: number, plan: PaperPlan): string {
   const whole = Math.max(0, Math.floor(elapsedSec));
   const minutes = Math.floor(whole / 60);
   const seconds = whole % 60;
   const when = minutes > 0 ? `${minutes} min ${String(seconds).padStart(2, "0")} s` : `${seconds} s`;
-  const mode = plan === "double" ? "double" : plan === "stop" ? "stop" : "direct";
-  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${invert ? "inversé" : "normal"} · ${mode}`;
+  const tag = plan === "inverse" ? "inversé" : plan === "direct" ? "normal" : plan;
+  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${tag}`;
 }
 
 function useNowSec(serverNow: number | null): number {
@@ -385,8 +379,7 @@ export function Desk() {
         Math.max(0, nowSec - snap.live.start),
         triggerPct,
         fresh.earlyPct,
-        liveInvert,
-        livePlan === "double" ? "double" : livePlan === "stop" ? "stop" : "direct",
+        livePlan,
       );
       placing.current = true;
       tries.current.n += 1;
@@ -503,7 +496,6 @@ export function Desk() {
       if (choice.action !== "buy" || !choice.side || choice.ask == null || choice.shares == null || choice.cost == null || choice.fee == null || choice.ev == null) {
         continue;
       }
-      const notePlan = plan === "double" ? "double" : plan === "stop" ? "stop" : "direct";
       useDesk.getState().enterBook(plan, {
         id: `${snap.live.start}-${plan}-${choice.side}`,
         windowStart: snap.live.start,
@@ -517,7 +509,7 @@ export function Desk() {
         openedAt: Date.now(),
         strike: snap.live.strike,
         btc: snap.price,
-        entry: entryNote(elapsed, triggerPct, now.earlyPct, plan === "inverse", notePlan),
+        entry: entryNote(elapsed, triggerPct, now.earlyPct, plan),
       });
     }
   }, [snap, hydrated, armed, stakeUsd, minEdge, lossCap, nowSec, mode, liveArmed, session]);
@@ -1541,13 +1533,25 @@ function Portfolio({
   );
 }
 
+function shownEntry(entry: string | undefined, plan: PaperPlan): string | undefined {
+  if (!entry) return entry;
+  let base = entry;
+  for (let i = 0; i < 3; i++) {
+    const next = base.replace(/\s*·\s*(inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
+    if (next === base) break;
+    base = next;
+  }
+  const tag = plan === "inverse" ? "inversé" : plan === "direct" ? "normal" : plan;
+  base = base.trim();
+  return base ? `${base} · ${tag}` : tag;
+}
+
 function planOfFill(fill: LiveFill): PaperPlan {
-  if (fill.plan) return fill.plan;
-  const entry = fill.entry ?? "";
-  if (entry.includes("invers")) return "inverse";
-  if (entry.includes("double") || entry.includes("paire")) return "double";
-  if (entry.includes("stop")) return "stop";
-  return "direct";
+  const text = (fill.entry ?? "").toLowerCase();
+  if (text.includes("invers")) return "inverse";
+  if (text.includes("double") || text.includes("paire")) return "double";
+  if (/(?:^|·|\s)stop(?:$|·|\s)/.test(text)) return "stop";
+  return fill.plan ?? "direct";
 }
 
 function fillMoney(fill: LiveFill): number | null {
@@ -1740,7 +1744,7 @@ function PaperList({
               {plan === "double" && !book.open.hedge ? " · autre côté pas encore" : ""}
             </p>
             <p className="font-mono text-xs text-mist">{formatTime(book.open.openedAt)}</p>
-            {book.open.entry ? <p className="font-mono text-xs text-mist">{book.open.entry}</p> : null}
+            {book.open.entry ? <p className="font-mono text-xs text-mist">{shownEntry(book.open.entry, plan)}</p> : null}
           </div>
           <p className="font-mono text-sm text-mist">{book.open.hedge ? "deux côtés" : "en cours"}</p>
         </li>
@@ -1764,7 +1768,7 @@ function PaperList({
                       : "perdu"}
             </p>
             <p className="font-mono text-xs text-mist">{formatTime(trade.openedAt)}</p>
-            {trade.entry ? <p className="font-mono text-xs text-mist">{trade.entry}</p> : null}
+            {trade.entry ? <p className="font-mono text-xs text-mist">{shownEntry(trade.entry, plan)}</p> : null}
           </div>
           <p className={`font-mono text-sm ${trade.pnl > 0 ? "text-up" : trade.pnl < 0 ? "text-down" : "text-mist"}`}>
             {formatSignedUsd(trade.pnl)}
@@ -1816,7 +1820,7 @@ function LiveList({ fills, nowSec }: { fills: LiveFill[]; nowSec: number }) {
               <p className="font-mono text-xs text-mist">
                 {formatTime(first.openedAt)} · {row.map((fill) => fill.detail).join(" · ")}
               </p>
-              {first.entry ? <p className="font-mono text-xs text-mist">{first.entry}</p> : null}
+              {first.entry ? <p className="font-mono text-xs text-mist">{shownEntry(first.entry, planOfFill(first))}</p> : null}
             </div>
             <p className={`font-mono text-sm ${known && pnl > 0 ? "text-up" : known && pnl < 0 ? "text-down" : "text-mist"}`}>
               {known ? formatSignedUsd(pnl) : rejected ? "échec" : "…"}

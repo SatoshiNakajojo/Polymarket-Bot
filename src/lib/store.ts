@@ -23,6 +23,7 @@ export type PaperTrade = {
   exit?: "stop";
   hedged?: boolean;
   hedge?: { side: Side; ask: number; shares: number; cost: number; fee: number } | null;
+  plan?: "direct" | "inverse" | "stop" | "double";
 };
 
 export type OpenPosition = {
@@ -40,6 +41,7 @@ export type OpenPosition = {
   entry?: string;
   btc?: number;
   hedge?: { side: Side; ask: number; shares: number; cost: number; fee: number } | null;
+  plan?: "direct" | "inverse" | "stop" | "double";
 };
 
 export const PAPER_PLANS = ["direct", "inverse", "stop", "double"] as const;
@@ -277,12 +279,14 @@ export const useDesk = create<DeskState>()((set, get) => ({
       pushLive: (fill) =>
         set((state) => ({ liveFills: [fill, ...state.liveFills].slice(0, 200) })),
       upsertLive: (fill) =>
-        set((state) => ({
-          liveFills: [
-            { ...fill, plan: fill.plan ?? state.livePlan },
-            ...state.liveFills.filter((item) => item.id !== fill.id),
-          ].slice(0, 200),
-        })),
+        set((state) => {
+          const prev = state.liveFills.find((item) => item.id === fill.id);
+          const fromEntry = planFromEntry(fill.entry ?? prev?.entry);
+          const plan = fill.plan ?? prev?.plan ?? (fromEntry === "direct" ? state.livePlan : fromEntry);
+          return {
+            liveFills: [{ ...fill, plan }, ...state.liveFills.filter((item) => item.id !== fill.id)].slice(0, 200),
+          };
+        }),
       settleLive: (windowStart, outcome) =>
         set((state) => {
           let changed = false;
@@ -308,10 +312,11 @@ export const useDesk = create<DeskState>()((set, get) => ({
         const book = state.books[plan];
         if (book.open || book.enteredWindow === position.windowStart) return;
         if (position.cost > book.cash) return;
+        const stamped = { ...position, plan };
         set(
           mirror(state, plan, {
             ...book,
-            open: position,
+            open: stamped,
             enteredWindow: position.windowStart,
             cash: book.cash - position.cost,
           }),
@@ -435,17 +440,71 @@ function mirror(state: DeskState, plan: PaperPlan, book: PaperBook) {
   };
 }
 
-function planOf(entry?: string): PaperPlan {
-  if (entry?.includes("invers")) return "inverse";
-  if (entry?.includes("double") || entry?.includes("paire")) return "double";
-  if (entry?.includes("stop")) return "stop";
+function planFromEntry(entry?: string): PaperPlan {
+  const text = entry?.toLowerCase() ?? "";
+  if (text.includes("invers")) return "inverse";
+  if (text.includes("double") || text.includes("paire")) return "double";
+  if (/(?:^|·|\s)stop(?:$|·|\s)/.test(text)) return "stop";
   return "direct";
+}
+
+function strategyTag(plan: PaperPlan): string {
+  if (plan === "inverse") return "inversé";
+  if (plan === "stop") return "stop";
+  if (plan === "double") return "double";
+  return "normal";
+}
+
+function cleanEntry(entry: string | undefined, plan: PaperPlan): string {
+  let base = entry ?? "";
+  for (let i = 0; i < 3; i++) {
+    const next = base.replace(/\s*·\s*(inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
+    if (next === base) break;
+    base = next;
+  }
+  base = base.trim();
+  const tag = strategyTag(plan);
+  return base ? `${base} · ${tag}` : tag;
+}
+
+function homeOf(entry: string | undefined, explicit: PaperPlan | null, fallback: PaperPlan): PaperPlan {
+  const fromEntry = planFromEntry(entry);
+  if (fromEntry !== "direct") return fromEntry;
+  return explicit ?? fallback;
+}
+
+function rebucket(books: PaperBooks): PaperBooks {
+  const next = blankBooks();
+  const seen = new Set<string>();
+  for (const plan of PAPER_PLANS) {
+    next[plan].enteredWindow = books[plan]?.enteredWindow ?? null;
+    for (const trade of books[plan]?.trades ?? []) {
+      if (seen.has(trade.id)) continue;
+      seen.add(trade.id);
+      const home = homeOf(trade.entry, asPlan(trade.plan), plan);
+      next[home].trades.push({ ...trade, plan: home, entry: cleanEntry(trade.entry, home) });
+    }
+  }
+  for (const plan of PAPER_PLANS) {
+    const open = books[plan]?.open;
+    if (!open) continue;
+    const home = homeOf(open.entry, asPlan(open.plan), plan);
+    const current = next[home].open;
+    if (current && current.openedAt >= open.openedAt) continue;
+    next[home].open = { ...open, plan: home, entry: cleanEntry(open.entry, home) };
+    next[home].enteredWindow = open.windowStart;
+  }
+  for (const plan of PAPER_PLANS) {
+    next[plan].trades.sort((a, b) => b.openedAt - a.openedAt);
+    next[plan].cash = bookCash(next[plan]);
+  }
+  return next;
 }
 
 function booksFromLegacy(trades: PaperTrade[], open: OpenPosition | null): PaperBooks {
   const books = blankBooks();
   for (const trade of trades) {
-    const plan = planOf(trade.entry);
+    const plan = planFromEntry(trade.entry);
     books[plan].trades.push(trade);
   }
   for (const plan of PAPER_PLANS) {
@@ -453,12 +512,12 @@ function booksFromLegacy(trades: PaperTrade[], open: OpenPosition | null): Paper
     books[plan].cash = bookCash(books[plan]);
   }
   if (open) {
-    const plan = planOf(open.entry);
+    const plan = planFromEntry(open.entry);
     books[plan].open = open;
     books[plan].enteredWindow = open.windowStart;
     books[plan].cash = bookCash(books[plan]);
   }
-  return books;
+  return rebucket(books);
 }
 
 function mergeBooks(current: PaperBooks | null | undefined, older: PaperBooks | null | undefined): PaperBooks {
@@ -472,7 +531,7 @@ function mergeBooks(current: PaperBooks | null | undefined, older: PaperBooks | 
     books[plan] = { trades, open, enteredWindow, cash: 0 };
     books[plan].cash = bookCash(books[plan]);
   }
-  return books;
+  return rebucket(books);
 }
 
 function latestAt(rows: { openedAt?: number }[]): number {
