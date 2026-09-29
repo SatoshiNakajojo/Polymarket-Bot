@@ -29,13 +29,20 @@ import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
 import { STARTING_CASH, adoptSaved, currentSaved, paperLabel, PAPER_PLANS, restoreDesk, useDesk, type LiveFill, type OpenPosition, type PaperPlan, type PaperTrade } from "@/lib/store";
 
+function planTag(plan: PaperPlan): string {
+  if (plan === "inverse") return "inversé";
+  if (plan === "inverseStop") return "invstop";
+  if (plan === "flip") return "stopx2";
+  if (plan === "direct") return "normal";
+  return plan;
+}
+
 function entryNote(elapsedSec: number, triggerPct: number, earlyPct: number, plan: PaperPlan): string {
   const whole = Math.max(0, Math.floor(elapsedSec));
   const minutes = Math.floor(whole / 60);
   const seconds = whole % 60;
   const when = minutes > 0 ? `${minutes} min ${String(seconds).padStart(2, "0")} s` : `${seconds} s`;
-  const tag = plan === "inverse" ? "inversé" : plan === "direct" ? "normal" : plan;
-  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${tag}`;
+  return `au bout de ${when} · marché ${triggerPct}/${100 - triggerPct} · seuil ${earlyPct}/${100 - earlyPct} · ${planTag(plan)}`;
 }
 
 function useNowSec(serverNow: number | null): number {
@@ -160,9 +167,10 @@ export function Desk() {
     const fresh = useDesk.getState();
     const liveMode = fresh.mode === "live";
     const livePlan = fresh.livePlan;
-    const liveInvert = livePlan === "inverse";
+    const liveInvert = livePlan === "inverse" || livePlan === "inverseStop";
     const livePair = livePlan === "double";
-    const liveStop = livePlan === "stop";
+    const liveStop = livePlan === "stop" || livePlan === "inverseStop" || livePlan === "flip";
+    const liveFlip = livePlan === "flip";
     const lossHalted = liveMode
       ? liveAtRisk(fresh.liveFills) >= fresh.lossCap
       : fresh.cash - STARTING_CASH <= -fresh.lossCap;
@@ -213,14 +221,15 @@ export function Desk() {
         livePair && otherAsk != null && pairLock(solo.ask, otherAsk, snap.feeRate) >= PAIR_MIN
           ? otherAsk
           : null;
-      if (crossed && !livePair) {
+      if (crossed && !livePair && !solo.flipped) {
         const bid = solo.side === "Up" ? market.up.bid : market.down.bid;
         const tokenId = solo.side === "Up" ? market.upToken : market.downToken;
         if (bid != null) {
           const shares = Math.floor((solo.stake / solo.ask) * 100) / 100;
+          const stake2 = Math.round(fresh.stakeUsd * 2 * 100) / 100;
           placing.current = true;
           void placeLiveSell({ tokenId, shares, minPrice: Math.max(0.01, bid - 0.01) })
-            .then((result) => {
+            .then(async (result) => {
               useDesk.getState().upsertLive({
                 ...solo,
                 result: result.ok ? "stop" : undefined,
@@ -228,6 +237,27 @@ export function Desk() {
                 detail: result.ok
                   ? `Stop BTC · vendu vers ${Math.round(bid * 100)} c`
                   : `Stop BTC refusé · ${result.message}`,
+              });
+              if (!result.ok || !liveFlip || otherAsk == null) return;
+              const buy = await placeLiveOrder({
+                tokenId: otherToken,
+                amount: stake2,
+                maxPrice: Math.min(0.99, otherAsk + 0.01),
+              });
+              useDesk.getState().upsertLive({
+                id: `flip-${solo.windowStart}-${otherSide}`,
+                windowStart: solo.windowStart,
+                side: otherSide,
+                ask: otherAsk,
+                stake: buy.ok ? buy.filledUsd : stake2,
+                openedAt: Date.now(),
+                status: buy.ok ? "accepted" : "rejected",
+                orderId: buy.ok ? buy.orderId : null,
+                btc: snap.price,
+                flipped: true,
+                plan: "flip",
+                detail: buy.ok ? "Autre côté x2 après le stop" : buy.message,
+                entry: "stopx2 · autre côté",
               });
             })
             .catch((error: unknown) => {
@@ -241,7 +271,7 @@ export function Desk() {
             });
           return;
         }
-      } else if (hedge != null && otherAsk != null) {
+      } else if (hedge != null && otherAsk != null && !solo.flipped) {
         const shares = Math.floor((solo.stake / solo.ask) * 100) / 100;
         const usd = Math.floor(shares * otherAsk * 100) / 100;
         if (shares >= snap.minOrderSize && usd >= 1) {
@@ -452,11 +482,46 @@ export function Desk() {
       const now = useDesk.getState();
       if (!now.paperOn[plan]) continue;
       const book = now.books[plan];
-      if (plan === "stop" && book.open?.btc != null && !book.open.hedge) {
+      const stops = plan === "stop" || plan === "inverseStop" || plan === "flip";
+      const inverts = plan === "inverse" || plan === "inverseStop";
+      if (stops && book.open?.btc != null && !book.open.hedge && !book.open.flipped) {
         const crossed = book.open.side === "Up" ? snap.price < book.open.btc : snap.price > book.open.btc;
         const bid = book.open.side === "Up" ? market.up.bid : market.down.bid;
         if (crossed && bid != null) {
-          now.stopBook(plan, bid);
+          if (plan === "flip") {
+            const otherSide = book.open.side === "Up" ? "Down" : "Up";
+            const otherAsk = otherSide === "Up" ? market.up.ask : market.down.ask;
+            let next: OpenPosition | null = null;
+            if (otherAsk != null && otherAsk > 0) {
+              const stake2 = now.stakeUsd * 2;
+              const shares = Math.floor((stake2 / otherAsk) * 100) / 100;
+              const fee = shares * takerFeePerShare(otherAsk, snap.feeRate);
+              const cost = shares * otherAsk + fee;
+              const cashAfter = book.cash + book.open.shares * bid;
+              if (shares >= snap.minOrderSize && cost <= cashAfter) {
+                next = {
+                  id: `${snap.live.start}-flip-${otherSide}`,
+                  windowStart: book.open.windowStart,
+                  side: otherSide,
+                  ask: otherAsk,
+                  shares,
+                  cost,
+                  fee,
+                  pModel: otherSide === "Up" ? fair.pUp : 1 - fair.pUp,
+                  ev: 0,
+                  openedAt: Date.now(),
+                  strike: snap.live.strike,
+                  btc: snap.price,
+                  flipped: true,
+                  plan: "flip",
+                  entry: entryNote(elapsed, triggerPct, now.earlyPct, "flip"),
+                };
+              }
+            }
+            now.flipBook(plan, bid, next);
+          } else {
+            now.stopBook(plan, bid);
+          }
           continue;
         }
       }
@@ -490,7 +555,7 @@ export function Desk() {
         armed: now.armed,
         marketState: market.acceptingOrders ? "ready" : "closed",
         cash: current.cash,
-        invert: plan === "inverse",
+        invert: inverts,
         earlyPrice: now.earlyPct / 100,
       });
       if (choice.action !== "buy" || !choice.side || choice.ask == null || choice.shares == null || choice.cost == null || choice.fee == null || choice.ev == null) {
@@ -701,7 +766,7 @@ function Live({
   const open = useDesk((s) => s.open);
   const enteredWindow = useDesk((s) => s.enteredWindow);
   const liveMode = mode === "live";
-  const invert = liveMode && livePlan === "inverse";
+  const invert = liveMode && (livePlan === "inverse" || livePlan === "inverseStop");
   const pair = liveMode && livePlan === "double";
   const lossHalted = liveMode ? liveAtRisk(liveFills) >= lossCap : cash - STARTING_CASH <= -lossCap;
   const market = snap.market;
@@ -1080,8 +1145,8 @@ function Controls({
       </div>
       <p className="mt-2 text-xs leading-relaxed text-mist">
         {mode === "live"
-          ? "En réel, une seule stratégie à la fois : elles prendraient des côtés opposés avec le même argent."
-          : "En papier, plusieurs stratégies tournent en même temps. Chacune garde son historique."}
+          ? "En réel, une seule stratégie à la fois. Normal : le modèle. Inversé : le contraire. Stop : normal, vendu si le BTC repasse le prix d'entrée. Double : un côté, puis l'autre si l'écart paie. Inversé + stop : l'inversé avec ce stop. Stop x2 : normal avec stop, et si le stop part, l'autre côté à deux fois la mise."
+          : "En papier, les stratégies allumées tournent ensemble. Normal : le modèle. Inversé : le contraire. Stop : normal, vendu si le BTC repasse le prix d'entrée. Double : un côté, puis l'autre si l'écart paie. Inversé + stop : l'inversé avec ce stop. Stop x2 : normal avec stop, et si le stop part, l'autre côté à deux fois la mise."}
       </p>
       <button
         type="button"
@@ -1537,26 +1602,31 @@ function shownEntry(entry: string | undefined, plan: PaperPlan): string | undefi
   if (!entry) return entry;
   let base = entry;
   for (let i = 0; i < 3; i++) {
-    const next = base.replace(/\s*·\s*(inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
+    const next = base.replace(/\s*·\s*(stopx2|invstop|inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
     if (next === base) break;
     base = next;
   }
-  const tag = plan === "inverse" ? "inversé" : plan === "direct" ? "normal" : plan;
+  const tag = planTag(plan);
   base = base.trim();
   return base ? `${base} · ${tag}` : tag;
 }
 
 function planOfFill(fill: LiveFill): PaperPlan {
-  if (fill.result === "stop") return "stop";
+  if (fill.plan) return fill.plan;
+  if (fill.id.includes("-inverseStop-")) return "inverseStop";
+  if (fill.id.includes("-flip-") || fill.id.startsWith("flip-")) return "flip";
   if (fill.id.includes("-stop-")) return "stop";
   if (fill.id.includes("-double-") || fill.id.startsWith("pair-")) return "double";
   if (fill.id.includes("-inverse-")) return "inverse";
   if (fill.id.includes("-direct-")) return "direct";
   const text = (fill.entry ?? "").toLowerCase();
+  if (text.includes("stopx2")) return "flip";
+  if (text.includes("invstop")) return "inverseStop";
   if (text.includes("invers")) return "inverse";
   if (/(?:^|·|\s)stop(?:$|·|\s)/.test(text)) return "stop";
   if (text.includes("double") || text.includes("paire")) return "double";
-  return fill.plan && fill.plan !== "direct" ? fill.plan : "direct";
+  if (fill.result === "stop") return "stop";
+  return "direct";
 }
 
 function fillMoney(fill: LiveFill): number | null {
@@ -1613,7 +1683,7 @@ function Journal({
           ))}
         </div>
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3">
         {stats.map((stat) => (
           <button
             key={stat.plan}
@@ -1747,6 +1817,7 @@ function PaperList({
             <p className="text-sm text-ink">
               {legsText(book.open.side, book.open.ask, book.open.hedge)}
               {plan === "double" && !book.open.hedge ? " · autre côté pas encore" : ""}
+              {book.open.flipped ? " · autre côté x2" : ""}
             </p>
             <p className="font-mono text-xs text-mist">{formatTime(book.open.openedAt)}</p>
             {book.open.entry ? <p className="font-mono text-xs text-mist">{shownEntry(book.open.entry, plan)}</p> : null}
@@ -1759,7 +1830,14 @@ function PaperList({
           <div>
             <p className="text-sm text-ink">
               {legsText(trade.side, trade.ask, trade.hedge)}
-              {plan === "double" && !trade.hedge ? " · un seul côté" : ""} ·{" "}
+              {plan === "double" && !trade.hedge ? " · un seul côté" : ""}
+              {plan === "flip" &&
+              trade.exit === "stop" &&
+              ((book.open?.flipped && book.open.windowStart === trade.windowStart) ||
+                book.trades.some((other) => other.id !== trade.id && other.windowStart === trade.windowStart && other.exit !== "stop"))
+                ? " · puis autre côté x2"
+                : ""}{" "}
+              ·{" "}
               {trade.exit === "stop"
                 ? "stop"
                 : trade.status === "void"

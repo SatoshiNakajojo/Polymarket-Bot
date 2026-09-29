@@ -19,8 +19,10 @@ export type HistoryFile = {
     inverse?: HistoryBook;
     stop?: HistoryBook;
     double?: HistoryBook;
+    inverseStop?: HistoryBook;
+    flip?: HistoryBook;
   };
-  paperOn?: { direct?: boolean; inverse?: boolean; stop?: boolean; double?: boolean };
+  paperOn?: { direct?: boolean; inverse?: boolean; stop?: boolean; double?: boolean; inverseStop?: boolean; flip?: boolean };
 };
 
 type HistoryBook = {

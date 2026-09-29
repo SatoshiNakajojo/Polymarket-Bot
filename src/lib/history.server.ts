@@ -60,7 +60,7 @@ function mergeById<T extends { id: string; openedAt: number }>(current: T[], old
   return [...map.values()].sort((a, b) => b.openedAt - a.openedAt).slice(0, 200);
 }
 
-const PAPER_PLAN_IDS = ["direct", "inverse", "stop", "double"] as const;
+const PAPER_PLAN_IDS = ["direct", "inverse", "stop", "double", "inverseStop", "flip"] as const;
 
 function countHistory(file: HistoryFile): number {
   const books = file.books as Record<string, { trades?: unknown[] }> | undefined;

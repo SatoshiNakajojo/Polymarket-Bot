@@ -23,7 +23,7 @@ export type PaperTrade = {
   exit?: "stop";
   hedged?: boolean;
   hedge?: { side: Side; ask: number; shares: number; cost: number; fee: number } | null;
-  plan?: "direct" | "inverse" | "stop" | "double";
+  plan?: "direct" | "inverse" | "stop" | "double" | "inverseStop" | "flip";
 };
 
 export type OpenPosition = {
@@ -41,10 +41,11 @@ export type OpenPosition = {
   entry?: string;
   btc?: number;
   hedge?: { side: Side; ask: number; shares: number; cost: number; fee: number } | null;
-  plan?: "direct" | "inverse" | "stop" | "double";
+  plan?: "direct" | "inverse" | "stop" | "double" | "inverseStop" | "flip";
+  flipped?: boolean;
 };
 
-export const PAPER_PLANS = ["direct", "inverse", "stop", "double"] as const;
+export const PAPER_PLANS = ["direct", "inverse", "stop", "double", "inverseStop", "flip"] as const;
 export type PaperPlan = (typeof PAPER_PLANS)[number];
 
 export type PaperBook = {
@@ -59,8 +60,10 @@ export type PaperBooks = Record<PaperPlan, PaperBook>;
 export function paperLabel(plan: PaperPlan): string {
   if (plan === "direct") return "Normal";
   if (plan === "inverse") return "Inversé";
-  if (plan === "stop") return "Stop BTC";
-  return "Double";
+  if (plan === "stop") return "Stop";
+  if (plan === "double") return "Double";
+  if (plan === "inverseStop") return "Inversé + stop";
+  return "Stop x2";
 }
 
 export function blankBook(): PaperBook {
@@ -68,7 +71,14 @@ export function blankBook(): PaperBook {
 }
 
 export function blankBooks(): PaperBooks {
-  return { direct: blankBook(), inverse: blankBook(), stop: blankBook(), double: blankBook() };
+  return {
+    direct: blankBook(),
+    inverse: blankBook(),
+    stop: blankBook(),
+    double: blankBook(),
+    inverseStop: blankBook(),
+    flip: blankBook(),
+  };
 }
 
 export function bookCash(book: PaperBook): number {
@@ -92,6 +102,7 @@ export type LiveFill = {
   btc?: number;
   entry?: string;
   plan?: PaperPlan;
+  flipped?: boolean;
 };
 
 const STORAGE_KEY = "fenetre-desk-v1";
@@ -229,6 +240,7 @@ type DeskState = {
   settleBook: (plan: PaperPlan, windowStart: number, outcome: Side, twap: number) => void;
   voidBook: (plan: PaperPlan, windowStart: number) => void;
   stopBook: (plan: PaperPlan, bid: number) => void;
+  flipBook: (plan: PaperPlan, bid: number, next: OpenPosition | null) => void;
   hedgeBook: (plan: PaperPlan, hedge: NonNullable<OpenPosition["hedge"]>) => void;
   reset: () => void;
 };
@@ -251,7 +263,7 @@ const defaults = {
   mode: "paper" as const,
   liveFills: [] as LiveFill[],
   books: blankBooks(),
-  paperOn: { direct: true, inverse: true, stop: true, double: true },
+  paperOn: { direct: true, inverse: true, stop: true, double: true, inverseStop: true, flip: true },
   livePlan: "direct" as PaperPlan,
 };
 
@@ -394,6 +406,35 @@ export const useDesk = create<DeskState>()((set, get) => ({
           }),
         );
       },
+      flipBook: (plan, bid, next) => {
+        const state = get();
+        const book = state.books[plan];
+        const open = book.open;
+        if (!open || open.hedge || open.flipped) return;
+        const payout = open.shares * bid;
+        const trade: PaperTrade = {
+          ...open,
+          status: payout >= open.cost ? "win" : "loss",
+          pnl: payout - open.cost,
+          outcome: null,
+          settleTwap: null,
+          exit: "stop",
+        };
+        let cash = book.cash + payout;
+        let opened: OpenPosition | null = null;
+        if (next && next.cost <= cash && next.shares > 0) {
+          opened = { ...next, plan, flipped: true };
+          cash -= next.cost;
+        }
+        set(
+          mirror(state, plan, {
+            cash,
+            open: opened,
+            enteredWindow: book.enteredWindow,
+            trades: [trade, ...book.trades].slice(0, 200),
+          }),
+        );
+      },
       hedgeBook: (plan, hedge) => {
         const state = get();
         const book = state.books[plan];
@@ -425,7 +466,14 @@ if (typeof window !== "undefined") {
 }
 
 function asPlan(value: unknown): PaperPlan | null {
-  return value === "direct" || value === "inverse" || value === "stop" || value === "double" ? value : null;
+  return value === "direct" ||
+    value === "inverse" ||
+    value === "stop" ||
+    value === "double" ||
+    value === "inverseStop" ||
+    value === "flip"
+    ? value
+    : null;
 }
 
 function mirror(state: DeskState, plan: PaperPlan, book: PaperBook) {
@@ -442,6 +490,8 @@ function mirror(state: DeskState, plan: PaperPlan, book: PaperBook) {
 
 function planFromEntry(entry?: string): PaperPlan {
   const text = entry?.toLowerCase() ?? "";
+  if (text.includes("stopx2")) return "flip";
+  if (text.includes("invstop")) return "inverseStop";
   if (text.includes("invers")) return "inverse";
   if (text.includes("double") || text.includes("paire")) return "double";
   if (/(?:^|·|\s)stop(?:$|·|\s)/.test(text)) return "stop";
@@ -450,6 +500,8 @@ function planFromEntry(entry?: string): PaperPlan {
 
 function strategyTag(plan: PaperPlan): string {
   if (plan === "inverse") return "inversé";
+  if (plan === "inverseStop") return "invstop";
+  if (plan === "flip") return "stopx2";
   if (plan === "stop") return "stop";
   if (plan === "double") return "double";
   return "normal";
@@ -458,7 +510,7 @@ function strategyTag(plan: PaperPlan): string {
 function cleanEntry(entry: string | undefined, plan: PaperPlan): string {
   let base = entry ?? "";
   for (let i = 0; i < 3; i++) {
-    const next = base.replace(/\s*·\s*(inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
+    const next = base.replace(/\s*·\s*(stopx2|invstop|inversé|inverse|normal|direct|stop|double|paire)\s*$/i, "");
     if (next === base) break;
     base = next;
   }
@@ -468,6 +520,8 @@ function cleanEntry(entry: string | undefined, plan: PaperPlan): string {
 }
 
 function planFromId(id: string): PaperPlan | null {
+  if (id.includes("-inverseStop-")) return "inverseStop";
+  if (id.includes("-flip-")) return "flip";
   if (id.includes("-stop-")) return "stop";
   if (id.includes("-double-")) return "double";
   if (id.includes("-inverse-")) return "inverse";
@@ -479,14 +533,14 @@ function homeOf(
   trade: { id?: string; entry?: string; plan?: PaperPlan | null; exit?: "stop"; hedge?: unknown; hedged?: boolean },
   foundIn: PaperPlan,
 ): PaperPlan {
-  if (trade.exit === "stop") return "stop";
   const fromId = trade.id ? planFromId(trade.id) : null;
   if (fromId) return fromId;
-  if (trade.hedge || trade.hedged) return "double";
   const explicit = asPlan(trade.plan);
   if (explicit) return explicit;
   const fromEntry = planFromEntry(trade.entry);
   if (fromEntry !== "direct") return fromEntry;
+  if (trade.hedge || trade.hedged) return "double";
+  if (trade.exit === "stop") return "stop";
   return foundIn;
 }
 
@@ -646,6 +700,8 @@ export function restoreDesk() {
         inverse: saved.paperOn?.inverse !== false,
         stop: saved.paperOn?.stop !== false,
         double: saved.paperOn?.double !== false,
+        inverseStop: saved.paperOn?.inverseStop !== false,
+        flip: saved.paperOn?.flip !== false,
       },
       livePlan: asPlan(saved.livePlan) ?? (saved.invert ? "inverse" : saved.pair ? "double" : "direct"),
     });
