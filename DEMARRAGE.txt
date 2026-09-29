@@ -39,3 +39,12 @@ Le suivi papier 24 h/24 (journal + toutes les stratégies en direct, aucun ordre
 Sur le VPS, pour qu'il tourne en permanence :
    pm2 start npm --name fenetre-papier -- run paper
 Le tableau des scores est dans data/journal/papier.json.
+
+Le teneur de marché en papier (ordres limites simulés sur Up et Down, aucun ordre réel) :
+   npm run maker
+Sur le VPS :
+   pm2 start npm --name fenetre-maker -- run maker
+   pm2 save
+Résultats par fenêtre dans data/maker/resultats.jsonl.
+Réglages (facultatifs) : MAKER_SIZE (parts par ordre, 10), MAKER_IMBALANCE (déséquilibre max, 10),
+MAKER_MAX_SIDE (parts max par côté et par fenêtre, 100), MAKER_STOP (arrêt avant la fin, 45 s).

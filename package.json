@@ -16,7 +16,7 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --import ./scripts/alias-register.mjs --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/bot/policy.test.ts src/bot/journal-model.test.ts src/bot/journal-learn.test.ts src/bot/strategies.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --import ./scripts/alias-register.mjs --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/bot/policy.test.ts src/bot/journal-model.test.ts src/bot/journal-learn.test.ts src/bot/strategies.test.ts src/bot/maker.test.ts",
     "signer": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/signer.ts",
     "bot": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/run.ts",
     "journal": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/journal.ts",
@@ -24,6 +24,7 @@
     "journal:train": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/journal-train.ts",
     "journal:strategies": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/journal-strategies.ts",
     "paper": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/paper.ts",
+    "maker": "node --experimental-strip-types --import ./scripts/alias-register.mjs src/bot/maker-paper.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

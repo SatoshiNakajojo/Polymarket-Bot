@@ -196,7 +196,7 @@ async function loadCloses(): Promise<number[]> {
   return (rows ?? []).slice(-60).map((r) => Number(r[4]));
 }
 
-async function loadWindow(start: number): Promise<WindowInfo | null> {
+export async function loadWindow(start: number): Promise<WindowInfo | null> {
   const slug = `btc-updown-5m-${start}`;
   const events = (await getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`)) as unknown[];
   const event = Array.isArray(events) ? (events[0] as Record<string, unknown> | undefined) : undefined;
@@ -245,7 +245,7 @@ async function loadBook(tokenId: string): Promise<Quote> {
   };
 }
 
-async function officialOutcome(start: number): Promise<"Up" | "Down" | null> {
+export async function officialOutcome(start: number): Promise<"Up" | "Down" | null> {
   const events = (await getJson(`https://gamma-api.polymarket.com/events?slug=btc-updown-5m-${start}`)) as unknown[];
   const event = Array.isArray(events) ? (events[0] as Record<string, unknown> | undefined) : undefined;
   const market = Array.isArray(event?.markets) ? (event.markets[0] as Record<string, unknown>) : undefined;
