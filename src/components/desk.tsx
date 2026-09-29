@@ -1625,12 +1625,98 @@ function Journal({
           </button>
         ))}
       </div>
+      {view === "paper" ? <BookCurve book={books[tab]} plan={tab} /> : null}
       {view === "paper" ? (
         <PaperList book={books[tab]} plan={tab} />
       ) : (
         <LiveList fills={liveFills.filter((fill) => planOfFill(fill) === tab)} nowSec={nowSec} />
       )}
     </section>
+  );
+}
+
+function bookSeries(book: { cash: number; trades: PaperTrade[]; open: OpenPosition | null }) {
+  const trades = [...book.trades].sort((a, b) => a.openedAt - b.openedAt);
+  const now = Date.now();
+  const points: { t: number; value: number }[] = [];
+  let value = STARTING_CASH;
+  const opened = trades[0]?.openedAt ?? book.open?.openedAt ?? now - 60 * 60_000;
+  points.push({ t: opened - 60_000, value: STARTING_CASH });
+  for (const trade of trades) {
+    value += trade.pnl;
+    points.push({
+      t: Math.max(trade.openedAt, points[points.length - 1].t + 1),
+      value: Math.round(value * 100) / 100,
+    });
+  }
+  points.push({
+    t: Math.max(now, points[points.length - 1].t + 1),
+    value: Math.round(book.cash * 100) / 100,
+  });
+  return points;
+}
+
+function BookCurve({
+  book,
+  plan,
+}: {
+  book: { cash: number; trades: PaperTrade[]; open: OpenPosition | null };
+  plan: PaperPlan;
+}) {
+  const points = bookSeries(book);
+  const first = points[0]?.value ?? STARTING_CASH;
+  const last = points[points.length - 1]?.value ?? book.cash;
+  const change = last - first;
+  const values = points.map((point) => point.value);
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const pad = hi - lo < 0.5 ? 1 : Math.max(0.25, (hi - lo) * 0.12);
+  return (
+    <div className="mt-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm text-ink">Valeur · {paperLabel(plan)}</p>
+        <p className={`font-mono text-sm ${change >= 0 ? "text-up" : "text-down"}`}>{formatUsd(last, 2)}</p>
+      </div>
+      <div className="mt-2 h-36">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={points} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <XAxis
+              dataKey="t"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              tickFormatter={(t: number) =>
+                new Date(t).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+              }
+              stroke="var(--color-mist)"
+              tick={{ fill: "var(--color-mist)", fontSize: 11 }}
+              tickLine={false}
+              axisLine={false}
+              minTickGap={48}
+            />
+            <YAxis
+              domain={[lo - pad, hi + pad]}
+              tickFormatter={(v: number) => formatUsd(v, hi - lo < 50 ? 2 : 0)}
+              stroke="var(--color-mist)"
+              tick={{ fill: "var(--color-mist)", fontSize: 11 }}
+              tickLine={false}
+              axisLine={false}
+              width={84}
+            />
+            <ReferenceLine y={STARTING_CASH} stroke="var(--color-rule)" strokeDasharray="3 3" />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke={change >= 0 ? "var(--color-up)" : "var(--color-down)"}
+              fill={change >= 0 ? "var(--color-up)" : "var(--color-down)"}
+              fillOpacity={0.22}
+              strokeWidth={1.75}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }
 
