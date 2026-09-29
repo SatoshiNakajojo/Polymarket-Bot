@@ -22,6 +22,7 @@ export type PaperTrade = {
   entry?: string;
   exit?: "stop";
   hedged?: boolean;
+  hedge?: { side: Side; ask: number; shares: number; cost: number; fee: number } | null;
 };
 
 export type OpenPosition = {
@@ -88,6 +89,7 @@ export type LiveFill = {
   exitPrice?: number;
   btc?: number;
   entry?: string;
+  plan?: PaperPlan;
 };
 
 const STORAGE_KEY = "fenetre-desk-v1";
@@ -112,6 +114,7 @@ type SavedDesk = {
   liveFills: LiveFill[];
   books: PaperBooks;
   paperOn: Record<PaperPlan, boolean>;
+  livePlan: PaperPlan;
 };
 
 function savedSlice(state: DeskState): SavedDesk {
@@ -134,6 +137,7 @@ function savedSlice(state: DeskState): SavedDesk {
     liveFills: state.liveFills,
     books: state.books,
     paperOn: state.paperOn,
+    livePlan: state.livePlan,
   };
 }
 
@@ -197,6 +201,7 @@ type DeskState = {
   liveFills: LiveFill[];
   books: PaperBooks;
   paperOn: Record<PaperPlan, boolean>;
+  livePlan: PaperPlan;
   setHydrated: () => void;
   setArmed: (armed: boolean) => void;
   setStakeUsd: (n: number) => void;
@@ -210,6 +215,7 @@ type DeskState = {
   setStopCents: (n: number) => void;
   setMode: (mode: "paper" | "live") => void;
   setPaperOn: (plan: PaperPlan, on: boolean) => void;
+  setLivePlan: (plan: PaperPlan) => void;
   lockWindow: (windowStart: number) => void;
   pushLive: (fill: LiveFill) => void;
   upsertLive: (fill: LiveFill) => void;
@@ -244,6 +250,7 @@ const defaults = {
   liveFills: [] as LiveFill[],
   books: blankBooks(),
   paperOn: { direct: true, inverse: true, stop: true, double: true },
+  livePlan: "direct" as PaperPlan,
 };
 
 export const useDesk = create<DeskState>()((set, get) => ({
@@ -262,6 +269,7 @@ export const useDesk = create<DeskState>()((set, get) => ({
       setStopCents: (stopCents) => set({ stopCents }),
       setMode: (mode) => set({ mode }),
       setPaperOn: (plan, on) => set((state) => ({ paperOn: { ...state.paperOn, [plan]: on } })),
+      setLivePlan: (livePlan) => set({ livePlan }),
       lockWindow: (windowStart) => {
         if (get().enteredWindow === windowStart) return;
         set({ enteredWindow: windowStart });
@@ -270,7 +278,10 @@ export const useDesk = create<DeskState>()((set, get) => ({
         set((state) => ({ liveFills: [fill, ...state.liveFills].slice(0, 200) })),
       upsertLive: (fill) =>
         set((state) => ({
-          liveFills: [fill, ...state.liveFills.filter((item) => item.id !== fill.id)].slice(0, 200),
+          liveFills: [
+            { ...fill, plan: fill.plan ?? state.livePlan },
+            ...state.liveFills.filter((item) => item.id !== fill.id),
+          ].slice(0, 200),
         })),
       settleLive: (windowStart, outcome) =>
         set((state) => {
@@ -408,6 +419,10 @@ if (typeof window !== "undefined") {
   useDesk.subscribe((state) => writeSaved(state));
 }
 
+function asPlan(value: unknown): PaperPlan | null {
+  return value === "direct" || value === "inverse" || value === "stop" || value === "double" ? value : null;
+}
+
 function mirror(state: DeskState, plan: PaperPlan, book: PaperBook) {
   const books = { ...state.books, [plan]: book };
   const direct = books.direct;
@@ -521,6 +536,7 @@ export function adoptSaved(incoming: Partial<SavedDesk> | null) {
           : state.btcStop,
     stopCents: typeof incoming.stopCents === "number" ? incoming.stopCents : state.stopCents,
     mode: takeFile && (incoming.mode === "live" || incoming.mode === "paper") ? incoming.mode : state.mode,
+    livePlan: asPlan(incoming.livePlan) ?? state.livePlan,
     hydrated: true,
   });
 }
@@ -555,6 +571,7 @@ export function restoreDesk() {
         stop: saved.paperOn?.stop !== false,
         double: saved.paperOn?.double !== false,
       },
+      livePlan: asPlan(saved.livePlan) ?? (saved.invert ? "inverse" : saved.pair ? "double" : "direct"),
     });
     const direct = useDesk.getState().books.direct;
     useDesk.setState({ cash: direct.cash, trades: direct.trades, open: direct.open, enteredWindow: direct.enteredWindow });
