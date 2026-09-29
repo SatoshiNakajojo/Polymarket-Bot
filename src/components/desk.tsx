@@ -179,81 +179,6 @@ export function Desk() {
           (fill) => fill.status === "accepted" && !fill.result && fill.windowStart === snap.live.start,
         )
       : [];
-    const upAskNow = market?.up.ask ?? null;
-    const downAskNow = market?.down.ask ?? null;
-    const together =
-      upAskNow != null && downAskNow != null ? pairLock(upAskNow, downAskNow, snap.feeRate) : null;
-    const inWindow = fresh.enteredWindow === snap.live.start || held.length > 0;
-    if (
-      fresh.pair &&
-      liveMode &&
-      market &&
-      session &&
-      liveArmed &&
-      !placing.current &&
-      !inWindow &&
-      !fresh.open &&
-      together != null &&
-      together >= PAIR_MIN &&
-      upAskNow != null &&
-      downAskNow != null
-    ) {
-      const shares = Math.floor((fresh.stakeUsd / (upAskNow + downAskNow)) * 100) / 100;
-      const upUsd = Math.floor(shares * upAskNow * 100) / 100;
-      const downUsd = Math.floor(shares * downAskNow * 100) / 100;
-      if (shares >= snap.minOrderSize && upUsd >= 1 && downUsd >= 1) {
-        placing.current = true;
-        const windowStart = snap.live.start;
-        const btc = snap.price;
-        useDesk.getState().lockWindow(windowStart);
-        const writeLeg = (
-          side: "Up" | "Down",
-          ask: number,
-          usd: number,
-          result: { ok: boolean; message?: string; orderId?: string; filledUsd?: number; status?: string },
-        ) => {
-          useDesk.getState().upsertLive({
-            id: `pair-${windowStart}-${side}`,
-            windowStart,
-            side,
-            ask,
-            stake: result.ok ? (result.filledUsd ?? usd) : usd,
-            openedAt: Date.now(),
-            status: result.ok ? "accepted" : "rejected",
-            orderId: result.ok ? (result.orderId ?? null) : null,
-            btc,
-            detail: result.ok ? `paire · ${result.status ?? "matched"}` : (result.message ?? "refusé"),
-            entry: "paire",
-          });
-        };
-        void Promise.all([
-          placeLiveOrder({
-            tokenId: market.upToken,
-            amount: upUsd,
-            maxPrice: Math.min(0.99, upAskNow + 0.01),
-          }).catch((error: unknown) => ({
-            ok: false as const,
-            message: error instanceof Error ? error.message : "Achat Up refusé.",
-          })),
-          placeLiveOrder({
-            tokenId: market.downToken,
-            amount: downUsd,
-            maxPrice: Math.min(0.99, downAskNow + 0.01),
-          }).catch((error: unknown) => ({
-            ok: false as const,
-            message: error instanceof Error ? error.message : "Achat Down refusé.",
-          })),
-        ])
-          .then(([up, down]) => {
-            writeLeg("Up", upAskNow, upUsd, up);
-            writeLeg("Down", downAskNow, downUsd, down);
-          })
-          .finally(() => {
-            placing.current = false;
-          });
-        return;
-      }
-    }
     const solo = held.length === 1 ? held[0] : null;
     if (liveMode && market && session && liveArmed && !placing.current && solo) {
       const crossed =
@@ -738,9 +663,7 @@ function Live({
     ? (liveFills.find((fill) => fill.status === "accepted" && !fill.result && fill.windowStart === snap.live.start) ?? null)
     : null;
   const otherAsk = liveOpen?.side === "Up" ? downAsk : liveOpen?.side === "Down" ? upAsk : null;
-  const bookLock = upAsk != null && downAsk != null ? pairLock(upAsk, downAsk, snap.feeRate) : null;
   const hedgeLocked = liveOpen && otherAsk != null ? pairLock(liveOpen.ask, otherAsk, snap.feeRate) : null;
-  const both = pair && bookLock != null && bookLock >= PAIR_MIN;
   const marked = liveOpen?.side ?? open?.side ?? decision.side;
 
   const delta = snap.price - snap.live.strike;
@@ -827,14 +750,14 @@ function Live({
               quote={market?.up ?? null}
               prob={fair.pUp}
               feeRate={snap.feeRate}
-              hot={both || marked === "Up"}
+              hot={marked === "Up"}
             />
             <QuoteCard
               side="Down"
               quote={market?.down ?? null}
               prob={1 - fair.pUp}
               feeRate={snap.feeRate}
-              hot={both || marked === "Down"}
+              hot={marked === "Down"}
             />
           </div>
           <div
@@ -844,22 +767,18 @@ function Live({
           >
             <p className="font-mono text-xs text-mist">décision</p>
             <p className="mt-1 text-2xl font-semibold text-ink">
-              {both
-                ? "Acheter Up et Down"
-                : pair && hedgeLocked != null && hedgeLocked >= PAIR_MIN
-                  ? "Couvrir l'autre côté"
-                  : decision.action === "buy"
-                    ? `Acheter ${decision.side === "Up" ? "Up" : "Down"}`
-                    : "Attendre"}
+              {pair && hedgeLocked != null && hedgeLocked >= PAIR_MIN
+                ? "Acheter l'autre côté"
+                : decision.action === "buy"
+                  ? `Acheter ${decision.side === "Up" ? "Up" : "Down"}`
+                  : "Attendre"}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-mist">
-              {both && upAsk != null && downAsk != null && bookLock != null
-                ? `Up ${Math.round(upAsk * 100)} c et Down ${Math.round(downAsk * 100)} c ensemble. Il reste ${Math.round(bookLock * 100)} c par part après frais.`
-                : pair && liveOpen && otherAsk != null && hedgeLocked != null
-                  ? hedgeLocked >= PAIR_MIN
-                    ? `${liveOpen.side === "Up" ? "Down" : "Up"} à ${Math.round(otherAsk * 100)} c. Avec le prix déjà payé, il reste ${Math.round(hedgeLocked * 100)} c par part.`
-                    : `Couverture pas encore. Il manque ${Math.round(-hedgeLocked * 100)} c pour que les deux côtés vaillent le coup.`
-                  : decision.reason}
+              {pair && liveOpen && otherAsk != null && hedgeLocked != null
+                ? hedgeLocked >= PAIR_MIN
+                  ? `${liveOpen.side === "Up" ? "Down" : "Up"} à ${Math.round(otherAsk * 100)} c. Avec le prix déjà payé, il reste ${Math.round(hedgeLocked * 100)} c par part.`
+                  : `L'autre côté n'est pas encore assez bon marché. Il manque ${Math.round(-hedgeLocked * 100)} c.`
+                : decision.reason}
             </p>
             {liveOpen ? (
               <p className="mt-3 font-mono text-xs text-ink">
@@ -980,7 +899,7 @@ function Controls({
           <p className="text-sm font-medium text-ink">{mode === "live" ? "Bot réel" : "Bot papier"}</p>
           <p className="text-xs text-mist">
             {pair
-              ? "Achète Up et Down en même temps dès que les deux prix laissent 1 c. Sinon le premier part, et l'autre dès que l'écart paie."
+              ? "Un côté d'abord, l'autre plus tard quand l'écart paie. Le stop est coupé."
               : `Entre après ${entryWaitMin} min si c'est encore 50/50, ou dès qu'un côté atteint ${earlyPct} %.`}
             {invert ? " Signal inversé." : ""}
             {btcStop ? " Stop si le BTC repasse son prix d'entrée." : ""}

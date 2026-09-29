@@ -200,8 +200,8 @@ export const useDesk = create<DeskState>()((set, get) => ({
       setEntryWaitMin: (entryWaitMin) => set({ entryWaitMin }),
       setEarlyPct: (earlyPct) => set({ earlyPct }),
       setInvert: (invert) => set({ invert }),
-      setPair: (pair) => set({ pair }),
-      setBtcStop: (btcStop) => set({ btcStop }),
+      setPair: (pair) => set(pair ? { pair: true, btcStop: false } : { pair: false }),
+      setBtcStop: (btcStop) => set(btcStop ? { btcStop: true, pair: false } : { btcStop: false }),
       setStopCents: (stopCents) => set({ stopCents }),
       setMode: (mode) => set({ mode }),
       lockWindow: (windowStart) => {
@@ -323,7 +323,12 @@ export function adoptSaved(incoming: Partial<SavedDesk> | null) {
     earlyPct: takeFile && typeof incoming.earlyPct === "number" ? incoming.earlyPct : state.earlyPct,
     invert: takeFile && typeof incoming.invert === "boolean" ? incoming.invert : state.invert,
     pair: typeof incoming.pair === "boolean" ? incoming.pair : state.pair,
-    btcStop: typeof incoming.btcStop === "boolean" ? incoming.btcStop : state.btcStop,
+    btcStop:
+      (typeof incoming.pair === "boolean" ? incoming.pair : state.pair)
+        ? false
+        : typeof incoming.btcStop === "boolean"
+          ? incoming.btcStop
+          : state.btcStop,
     stopCents: typeof incoming.stopCents === "number" ? incoming.stopCents : state.stopCents,
     mode: takeFile && (incoming.mode === "live" || incoming.mode === "paper") ? incoming.mode : state.mode,
     hydrated: true,
@@ -346,7 +351,7 @@ export function restoreDesk() {
       earlyPct: typeof saved.earlyPct === "number" ? saved.earlyPct : 75,
       invert: typeof saved.invert === "boolean" ? saved.invert : false,
       pair: typeof saved.pair === "boolean" ? saved.pair : false,
-      btcStop: typeof saved.btcStop === "boolean" ? saved.btcStop : true,
+      btcStop: saved.pair === true ? false : typeof saved.btcStop === "boolean" ? saved.btcStop : true,
       stopCents: typeof saved.stopCents === "number" ? saved.stopCents : 0,
       mode: saved.mode === "live" ? "live" : "paper",
       liveFills: Array.isArray(saved.liveFills) ? saved.liveFills : [],

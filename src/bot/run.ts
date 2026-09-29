@@ -37,7 +37,7 @@ const waitMin = Number(process.env.FENETRE_WAIT ?? 3);
 const earlyPrice = Number(process.env.FENETRE_EARLY ?? 75) / 100;
 const invert = process.env.FENETRE_INVERT === "1";
 const pair = process.env.FENETRE_PAIR === "1";
-const btcStop = process.env.FENETRE_BTC_STOP !== "0";
+const btcStop = process.env.FENETRE_BTC_STOP !== "0" && !pair;
 const armed = process.env.FENETRE_ARMED !== "0";
 const local = hasKey();
 const remote = Boolean(process.env.SIGNER_URL);
@@ -148,51 +148,6 @@ async function tick(disk: Disk) {
   if (settledChanged) saveDisk(disk);
   const market = snap.market;
   const open = disk.fills.filter((fill) => fill.window === snap.live.start && !fill.result);
-  if (
-    pair &&
-    market &&
-    open.length === 0 &&
-    !disk.windows.includes(snap.live.start) &&
-    market.up.ask != null &&
-    market.down.ask != null &&
-    pairLock(market.up.ask, market.down.ask, snap.feeRate) >= PAIR_MIN
-  ) {
-    const upAsk = market.up.ask;
-    const downAsk = market.down.ask;
-    const shares = Math.floor((stake / (upAsk + downAsk)) * 100) / 100;
-    const upUsd = Math.floor(shares * upAsk * 100) / 100;
-    const downUsd = Math.floor(shares * downAsk * 100) / 100;
-    if (shares >= snap.minOrderSize && upUsd >= 1 && downUsd >= 1) {
-      const up = await sendBuy({
-        assetId: market.upToken,
-        amount: upUsd,
-        maxPrice: Math.min(0.99, upAsk + 0.01),
-        windowStart: snap.live.start,
-        slug: market.slug,
-        hedge: false,
-      });
-      if (up.ok) {
-        disk.windows = [snap.live.start, ...disk.windows].slice(0, 40);
-        disk.fills.push({ window: snap.live.start, side: "Up", stake: upUsd, ask: upAsk, btc: snap.price });
-        const down = await sendBuy({
-          assetId: market.downToken,
-          amount: downUsd,
-          maxPrice: Math.min(0.99, downAsk + 0.01),
-          windowStart: snap.live.start,
-          slug: market.slug,
-          hedge: true,
-        });
-        if (down.ok) {
-          disk.fills.push({ window: snap.live.start, side: "Down", stake: downUsd, ask: downAsk, btc: snap.price });
-        }
-        saveDisk(disk);
-        console.log(down.ok ? `paire ${upUsd}$ + ${downUsd}$` : `paire incomplète: ${down.message ?? ""}`);
-      } else {
-        console.log(`paire refusée: ${up.message ?? ""}`);
-      }
-      return;
-    }
-  }
   const solo = open.length === 1 ? open[0] : null;
   if (solo && market) {
     const crossed =
