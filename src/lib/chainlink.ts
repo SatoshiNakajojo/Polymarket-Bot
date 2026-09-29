@@ -49,6 +49,23 @@ function restore() {
 function connect() {
   const ws = new WebSocket("wss://ws-live-data.polymarket.com");
   socket = ws;
+  let closing = false;
+  let lastMessage = Date.now();
+  // Signal de vie attendu par le serveur, et reconnexion si le flux se fige sans se fermer.
+  const heartbeat = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) ws.send("PING");
+    if (Date.now() - lastMessage > 30_000) shut();
+  }, 5_000);
+  const shut = () => {
+    if (closing) return;
+    closing = true;
+    clearInterval(heartbeat);
+    try {
+      ws.close();
+    } catch {
+      /* déjà fermé */
+    }
+  };
   ws.onopen = () => {
     ws.send(
       JSON.stringify({
@@ -64,6 +81,7 @@ function connect() {
     );
   };
   ws.onmessage = (event) => {
+    lastMessage = Date.now();
     try {
       const text = String(event.data ?? "");
       if (!text.startsWith("{")) return;
@@ -84,12 +102,15 @@ function connect() {
     }
   };
   ws.onclose = () => {
+    closing = true;
+    clearInterval(heartbeat);
     if (socket === ws) {
       socket = null;
       setTimeout(connect, 1500);
     }
   };
-  ws.onerror = () => ws.close();
+  // Fermer depuis onerror redéclenche onerror : sans garde, la pile déborde et le serveur tombe.
+  ws.onerror = () => shut();
 }
 
 export function ensureChainlink(): Promise<void> {
