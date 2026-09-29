@@ -1547,11 +1547,16 @@ function shownEntry(entry: string | undefined, plan: PaperPlan): string | undefi
 }
 
 function planOfFill(fill: LiveFill): PaperPlan {
+  if (fill.result === "stop") return "stop";
+  if (fill.id.includes("-stop-")) return "stop";
+  if (fill.id.includes("-double-") || fill.id.startsWith("pair-")) return "double";
+  if (fill.id.includes("-inverse-")) return "inverse";
+  if (fill.id.includes("-direct-")) return "direct";
   const text = (fill.entry ?? "").toLowerCase();
   if (text.includes("invers")) return "inverse";
-  if (text.includes("double") || text.includes("paire")) return "double";
   if (/(?:^|·|\s)stop(?:$|·|\s)/.test(text)) return "stop";
-  return fill.plan ?? "direct";
+  if (text.includes("double") || text.includes("paire")) return "double";
+  return fill.plan && fill.plan !== "direct" ? fill.plan : "direct";
 }
 
 function fillMoney(fill: LiveFill): number | null {

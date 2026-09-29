@@ -467,10 +467,27 @@ function cleanEntry(entry: string | undefined, plan: PaperPlan): string {
   return base ? `${base} · ${tag}` : tag;
 }
 
-function homeOf(entry: string | undefined, explicit: PaperPlan | null, fallback: PaperPlan): PaperPlan {
-  const fromEntry = planFromEntry(entry);
+function planFromId(id: string): PaperPlan | null {
+  if (id.includes("-stop-")) return "stop";
+  if (id.includes("-double-")) return "double";
+  if (id.includes("-inverse-")) return "inverse";
+  if (id.includes("-direct-")) return "direct";
+  return null;
+}
+
+function homeOf(
+  trade: { id?: string; entry?: string; plan?: PaperPlan | null; exit?: "stop"; hedge?: unknown; hedged?: boolean },
+  foundIn: PaperPlan,
+): PaperPlan {
+  if (trade.exit === "stop") return "stop";
+  const fromId = trade.id ? planFromId(trade.id) : null;
+  if (fromId) return fromId;
+  if (trade.hedge || trade.hedged) return "double";
+  const explicit = asPlan(trade.plan);
+  if (explicit) return explicit;
+  const fromEntry = planFromEntry(trade.entry);
   if (fromEntry !== "direct") return fromEntry;
-  return explicit ?? fallback;
+  return foundIn;
 }
 
 function rebucket(books: PaperBooks): PaperBooks {
@@ -481,14 +498,14 @@ function rebucket(books: PaperBooks): PaperBooks {
     for (const trade of books[plan]?.trades ?? []) {
       if (seen.has(trade.id)) continue;
       seen.add(trade.id);
-      const home = homeOf(trade.entry, asPlan(trade.plan), plan);
+      const home = homeOf(trade, plan);
       next[home].trades.push({ ...trade, plan: home, entry: cleanEntry(trade.entry, home) });
     }
   }
   for (const plan of PAPER_PLANS) {
     const open = books[plan]?.open;
     if (!open) continue;
-    const home = homeOf(open.entry, asPlan(open.plan), plan);
+    const home = homeOf(open, plan);
     const current = next[home].open;
     if (current && current.openedAt >= open.openedAt) continue;
     next[home].open = { ...open, plan: home, entry: cleanEntry(open.entry, home) };
