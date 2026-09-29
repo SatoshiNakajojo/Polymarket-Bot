@@ -52,6 +52,8 @@ export function takerFeePerShare(price: number, rate = FEE_RATE): number {
 }
 
 /** Profit locked per share by buying one Up and one Down, after taker fees. */
+export const PAIR_MIN = 0.01;
+
 export function pairLock(upAsk: number, downAsk: number, feeRate = FEE_RATE): number {
   return 1 - (upAsk + downAsk + takerFeePerShare(upAsk, feeRate) + takerFeePerShare(downAsk, feeRate));
 }
