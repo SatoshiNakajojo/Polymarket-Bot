@@ -4,6 +4,7 @@ import {
   bookProblem,
   decide,
   fairUp,
+  maxAskForEdge,
   normalCdf,
   takerFeePerShare,
   windowStartSec,
@@ -18,6 +19,12 @@ test("normal cdf is centered and monotonic", () => {
 test("window start aligns to 5 minutes", () => {
   assert.equal(windowStartSec(1_790_427_269), 1_790_427_000);
   assert.equal(windowStartSec(1_790_427_000), 1_790_427_000);
+});
+
+test("limit price keeps the minimum edge after fees", () => {
+  const ask = maxAskForEdge(0.7, 0.03, 0.07);
+  const fee = 0.07 * ask * (1 - ask);
+  assert.ok(Math.abs(0.7 - ask - fee - 0.03) < 1e-6);
 });
 
 test("taker fee peaks at 50c", () => {

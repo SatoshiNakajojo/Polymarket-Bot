@@ -41,3 +41,18 @@ test("refuse un autre marché, une mise trop grosse, et une fenêtre déjà pris
   assert.equal(taken.ok, false);
   if (!taken.ok) assert.match(taken.message, /fenêtre/);
 });
+
+test("accepte une seule couverture sur la fenêtre déjà prise", () => {
+  const order = {
+    assetId: "1".repeat(20),
+    amount: 15,
+    maxPrice: 0.4,
+    windowStart: 9,
+    slug: "btc-updown-5m-9",
+    hedge: true,
+  };
+  const first = vetOrder(order, limits, { spent: 5, lastWindow: 9, hedgedWindow: null });
+  assert.equal(first.ok, true);
+  const second = vetOrder(order, limits, { spent: 20, lastWindow: 9, hedgedWindow: 9 });
+  assert.equal(second.ok, false);
+});

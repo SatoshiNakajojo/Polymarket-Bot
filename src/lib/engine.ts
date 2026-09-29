@@ -5,6 +5,8 @@ export const FEE_RATE = 0.07;
 export const ENTRY_MIN_REMAINING = 20;
 export const ENTRY_MAX_REMAINING = 110;
 export const MAX_SPREAD = 0.08;
+export const MAX_ASK = 0.8;
+export const MAX_MODEL_GAP = 0.15;
 
 export type Side = "Up" | "Down";
 
@@ -47,6 +49,29 @@ export function normalCdf(x: number): number {
 export function takerFeePerShare(price: number, rate = FEE_RATE): number {
   const p = clamp(price, 0, 1);
   return rate * p * (1 - p);
+}
+
+/** Profit locked per share by buying one Up and one Down, after taker fees. */
+export function pairLock(upAsk: number, downAsk: number, feeRate = FEE_RATE): number {
+  return 1 - (upAsk + downAsk + takerFeePerShare(upAsk, feeRate) + takerFeePerShare(downAsk, feeRate));
+}
+export function maxAskForEdge(prob: number, minEdge: number, feeRate = FEE_RATE): number {
+  const rate = feeRate;
+  const target = prob - minEdge;
+  if (!(rate > 0) || !(target > 0)) return 0.01;
+  const disc = (1 + rate) ** 2 - 4 * rate * target;
+  if (!(disc > 0)) return 0.01;
+  const ask = ((1 + rate) - Math.sqrt(disc)) / (2 * rate);
+  if (!Number.isFinite(ask)) return 0.01;
+  return Math.min(0.99, Math.max(0.01, ask));
+}
+
+/** Win pays 1$ per share. The stake is the price paid; the fee is on top. */
+export function settlementPnl(stake: number, ask: number, won: boolean, feeRate = FEE_RATE): number {
+  if (!(stake > 0)) return 0;
+  if (!won || !(ask > 0)) return -stake;
+  const shares = stake / ask;
+  return shares - stake - shares * takerFeePerShare(ask, feeRate);
 }
 
 export type Fair = { pUp: number; breakeven: number; z: number };
@@ -192,11 +217,27 @@ export function decide(input: DecisionInput): Decision {
     );
   }
 
+  const modelP = pickUp ? input.pUp : 1 - input.pUp;
+  if (!input.invert && modelP - ask > MAX_MODEL_GAP) {
+    return wait(
+      `${label} à ${cents(ask).replace("+", "")}, le modèle dit ${Math.round(modelP * 100)} %. Écart trop grand, on passe.`,
+    );
+  }
+  if (ask > MAX_ASK && !input.invert) {
+    return wait(`${label} à ${cents(ask).replace("+", "")}. Au-dessus de 80 c, la perte possible est trop grande.`);
+  }
+
   let buySide = side;
   let buyAsk = ask;
   if (input.invert) {
     buySide = side === "Up" ? "Down" : "Up";
     buyAsk = buySide === "Up" ? upAsk : downAsk;
+  }
+  if (buyAsk > MAX_ASK) {
+    return wait(`${buySide} à ${cents(buyAsk).replace("+", "")}. Au-dessus de 80 c, la perte possible est trop grande.`);
+  }
+  if (!input.invert && buyAsk + 1e-9 < Math.max(upAsk, downAsk)) {
+    return wait("Le marché a déjà choisi l'autre côté. On ne prend pas l'outsider.");
   }
 
   const shares = Math.floor((input.stakeUsd / buyAsk) * 100) / 100;

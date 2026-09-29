@@ -11,3 +11,11 @@ export function readKey(): string {
 export function hasKey(): boolean {
   return Boolean(process.env.POLY_KEY_FILE || process.env.POLY_PRIVATE_KEY);
 }
+
+export function builderFromEnv(): { key: string; secret: string; passphrase: string } | undefined {
+  const key = process.env.POLY_BUILDER_KEY?.trim() ?? "";
+  const secret = process.env.POLY_BUILDER_SECRET?.trim() ?? "";
+  const passphrase = process.env.POLY_BUILDER_PASSPHRASE?.trim() ?? "";
+  if (!key || !secret || !passphrase) return undefined;
+  return { key, secret, passphrase };
+}

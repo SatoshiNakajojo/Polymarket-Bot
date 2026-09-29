@@ -58,7 +58,9 @@ type PlaceResult =
 
 type Handle = LiveSession & {
   place: (order: { tokenId: string; amount: number; maxPrice: number }) => Promise<PlaceResult>;
+  sell: (order: { tokenId: string; shares: number; minPrice: number }) => Promise<{ ok: true; orderId: string; status: string } | { ok: false; message: string }>;
   returnCash: () => Promise<string>;
+  redeem: () => Promise<string>;
   close: () => Promise<void>;
 };
 
@@ -174,10 +176,55 @@ export async function connectLive(
       if (sent.length === 0) throw new Error("Rien à renvoyer.");
       return `Renvoyé vers ${destination} : ${sent.join(", ")}.`;
     },
+    async redeem() {
+      const { loadPositions } = await import("@/lib/snapshot");
+      const rows = await loadPositions({ data: { wallet: client.account.wallet } });
+      const targets = [
+        ...new Map(
+          rows
+            .filter((row) => row.redeemable && row.currentValue > 0.01)
+            .map((row) => [row.conditionId, row]),
+        ).values(),
+      ];
+      if (targets.length === 0) {
+        const open = rows.filter((row) => row.size > 0 && !row.redeemable);
+        if (open.length === 0) return "Aucune part gagnante à convertir. Le solde du haut est seulement le pUSD libre.";
+        return open
+          .map((row) => `${row.outcome} · ${row.size.toFixed(1)} parts · ${row.currentValue.toFixed(2)} $ · pas encore réglé`)
+          .join("\n");
+      }
+      try {
+        await client.setupTradingApprovals();
+      } catch {
+        /* déjà autorisé, ou l'autorisation est incluse dans la conversion */
+      }
+      let done = 0;
+      const errors: string[] = [];
+      for (const row of targets) {
+        try {
+          const tx = await client.redeemPositions({ conditionId: row.conditionId });
+          await Promise.race([
+            tx.wait(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Toujours en cours. Regarde le solde dans une minute.")), 25_000),
+            ),
+          ]);
+          done += 1;
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "rejet";
+          if (text.includes("Relayer API Key") || text.includes("Builder API Key")) {
+            throw new Error("Reconnecte avec la clé builder, puis réessaie.");
+          }
+          errors.push(`${row.outcome} ${row.currentValue.toFixed(2)} $ : ${text}`);
+        }
+      }
+      if (done === 0) throw new Error(errors[0] ?? "Polymarket a refusé la conversion.");
+      return `Gains récupérés sur ${done} marché${done > 1 ? "s" : ""}. Le pUSD libre va remonter.`;
+    },
     async place(order) {
       const book = await client.fetchOrderBook({ assetId: order.tokenId });
       const tick = Number(book.tickSize) > 0 ? Number(book.tickSize) : 0.01;
-      const cap = Math.min(0.99, order.maxPrice + 0.03);
+      const cap = Math.min(0.99, order.maxPrice);
       const levels = book.asks
         .map((level) => ({ price: Number(level.price), size: Number(level.size) }))
         .filter((level) => level.price > 0 && level.price <= cap + 1e-9 && level.size > 0)
@@ -214,6 +261,22 @@ export async function connectLive(
         filledUsd: filledUsd > 0 ? filledUsd : order.amount,
       };
     },
+    async sell(order: { tokenId: string; shares: number; minPrice: number }) {
+      const book = await client.fetchOrderBook({ assetId: order.tokenId });
+      const shares = Math.floor(order.shares * 100) / 100;
+      if (!(shares >= Number(book.minOrderSize) || shares >= 5)) {
+        return { ok: false, message: "Trop peu de parts à revendre." };
+      }
+      const response = await client.placeMarketOrder({
+        assetId: order.tokenId,
+        side: OrderSide.SELL,
+        shares,
+        minPrice: Math.max(0.01, order.minPrice),
+        orderType: OrderType.FAK,
+      });
+      if (!response.ok) return { ok: false, message: response.message };
+      return { ok: true, orderId: response.orderId, status: String(response.status) };
+    },
     close: () => client.endAuthentication().then(() => undefined),
   };
   emit();
@@ -241,6 +304,11 @@ export async function depositBridgeAddress(wallet: string): Promise<string> {
   return evm;
 }
 
+export function redeemWinnings() {
+  if (!handle) throw new Error("Compte réel déconnecté.");
+  return handle.redeem();
+}
+
 export function returnCashToMetaMask() {
   if (!handle) throw new Error("Compte réel déconnecté.");
   return handle.returnCash();
@@ -249,4 +317,9 @@ export function returnCashToMetaMask() {
 export function placeLiveOrder(order: { tokenId: string; amount: number; maxPrice: number }) {
   if (!handle) throw new Error("Compte réel déconnecté.");
   return handle.place(order);
+}
+
+export function placeLiveSell(order: { tokenId: string; shares: number; minPrice: number }) {
+  if (!handle) throw new Error("Compte réel déconnecté.");
+  return handle.sell(order);
 }
