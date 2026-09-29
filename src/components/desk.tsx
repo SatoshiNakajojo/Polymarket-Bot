@@ -217,6 +217,7 @@ export function Desk() {
       elapsedSec: Math.max(0, nowSec - snap.live.start),
       remainingSec: Math.max(0, snap.live.end - nowSec),
       sigmaPerSqrtSec: snap.sigmaPerSqrtSec,
+      lockedAvg: snap.live.last60,
     });
     const market = snap.market;
     const decision = decide({
@@ -887,6 +888,7 @@ function Live({
     elapsedSec: elapsed,
     remainingSec: remaining,
     sigmaPerSqrtSec: snap.sigmaPerSqrtSec,
+    lockedAvg: snap.live.last60,
   });
   const armed = useDesk((s) => s.armed);
   const stakeUsd = useDesk((s) => s.stakeUsd);

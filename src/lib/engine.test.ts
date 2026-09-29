@@ -87,3 +87,16 @@ test("broken complement book is refused", () => {
   );
   assert.ok(reason);
 });
+
+test("TWAP 60 s : 40 $ au-dessus du prix à battre à 2 min 30 de la fin, c'est ~83 %, pas 100 %", () => {
+  const fair = fairUp({ strike: 100_000, twap: 100_020, price: 100_040, elapsedSec: 150, remainingSec: 150, sigmaPerSqrtSec: 4 });
+  assert.ok(fair.pUp > 0.78 && fair.pUp < 0.88, `pUp ${fair.pUp}`);
+});
+
+test("TWAP 60 s : dans la dernière minute, la part acquise compte", () => {
+  const base = { strike: 100_000, twap: 100_000, price: 99_995, elapsedSec: 270, remainingSec: 30, sigmaPerSqrtSec: 4 };
+  const lockedAbove = fairUp({ ...base, lockedAvg: 100_030 });
+  const lockedBelow = fairUp({ ...base, lockedAvg: 99_970 });
+  assert.ok(lockedAbove.pUp > 0.9);
+  assert.ok(lockedBelow.pUp < 0.1);
+});

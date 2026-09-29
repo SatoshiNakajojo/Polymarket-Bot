@@ -11,6 +11,35 @@ const HEADERS = {
 
 type Candle = { t: number; open: number; high: number; low: number; close: number };
 
+/**
+ * Petit cache en mémoire. Le snapshot est relu toutes les 2 s par chaque onglet
+ * et par le bot : sans cache, ~12 requêtes partaient à chaque fois, alors que
+ * les résultats réglés, les prix d'ouverture ou la fiche du marché ne bougent pas.
+ * Les requêtes identiques en cours sont partagées. `keep` = garder pour toujours.
+ */
+const memo = new Map<string, { at: number; forever: boolean; value?: unknown; pending?: Promise<unknown> }>();
+async function cached<T>(key: string, ttlMs: number, load: () => Promise<T>, keep?: (value: T) => boolean): Promise<T> {
+  const now = Date.now();
+  const hit = memo.get(key);
+  if (hit?.pending) return hit.pending as Promise<T>;
+  if (hit && "value" in hit && (hit.forever || now - hit.at < ttlMs)) return hit.value as T;
+  const pending = load().then(
+    (value) => {
+      memo.set(key, { at: Date.now(), forever: keep?.(value) ?? false, value });
+      if (memo.size > 400) {
+        for (const [k, v] of memo) if (!v.pending && Date.now() - v.at > 3600_000) memo.delete(k);
+      }
+      return value;
+    },
+    (error: unknown) => {
+      memo.delete(key);
+      throw error;
+    },
+  );
+  memo.set(key, { at: now, forever: false, pending });
+  return pending;
+}
+
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -180,6 +209,10 @@ function summarize(
 }
 
 async function loadOpenPrice(start: number): Promise<number | null> {
+  return cached(`open:${start}`, 10_000, () => fetchOpenPrice(start), (v) => v != null);
+}
+
+async function fetchOpenPrice(start: number): Promise<number | null> {
   const startIso = new Date(start * 1000).toISOString().replace(".000Z", "Z");
   const endIso = new Date((start + WINDOW_SEC) * 1000).toISOString().replace(".000Z", "Z");
   const body = (await getJson(
@@ -240,7 +273,27 @@ function fromChainlink(
     remaining: Math.max(0, end - (closed ? end : now)),
     complete: closed || now >= end,
     path,
+    last60: lastMinuteAverage(points, end - 60, spanEnd, strike),
   };
+}
+
+/** Moyenne pondérée dans le temps des prix Chainlink sur [from, to], ou null si `to` n'a pas atteint `from`. */
+function lastMinuteAverage(points: { t: number; price: number }[], from: number, to: number, fallback: number): number | null {
+  if (!(to > from)) return null;
+  let price = fallback;
+  for (const p of points) if (p.t <= from) price = p.price;
+  let cursor = from;
+  let acc = 0;
+  for (const p of points) {
+    if (p.t <= from) continue;
+    const t = Math.min(p.t, to);
+    if (t > cursor) acc += price * (t - cursor);
+    cursor = Math.max(cursor, t);
+    price = p.price;
+    if (p.t >= to) break;
+  }
+  if (to > cursor) acc += price * (to - cursor);
+  return acc / (to - from);
 }
 
 function sigmaFrom(candles: Candle[], start: number): number {
@@ -262,6 +315,10 @@ function sigmaFrom(candles: Candle[], start: number): number {
 
 async function loadSettled(start: number, now: number): Promise<{ start: number; outcome: Side } | null> {
   if (now < start + WINDOW_SEC) return null;
+  return cached(`settled:${start}`, 20_000, () => fetchSettled(start), (v) => v != null);
+}
+
+async function fetchSettled(start: number): Promise<{ start: number; outcome: Side } | null> {
   const slug = `btc-updown-5m-${start}`;
   const events = await getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`).catch(() => []);
   const event = Array.isArray(events) ? (events[0] as { markets?: unknown[] } | undefined) : undefined;
@@ -283,8 +340,8 @@ export async function loadSnapshot(): Promise<Snapshot> {
     const slug = `btc-updown-5m-${start}`;
     const [coinbase, candles, events, settled, liveOpen, previousOpen] = await Promise.all([
       loadBtcPrice(),
-      loadCandles(start - 3900, serverNow + 5),
-      getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`).catch(() => []),
+      cached(`candles:${start}`, 30_000, () => loadCandles(start - 3900, serverNow + 5)),
+      cached(`event:${slug}`, 30_000, () => getJson(`https://gamma-api.polymarket.com/events?slug=${slug}`)).catch(() => []),
       Promise.all([1, 2, 3, 4, 5, 6].map((n) => loadSettled(start - n * WINDOW_SEC, serverNow))),
       ensureChainlink().then(() => loadOpenPrice(start)).catch(() => null),
       loadOpenPrice(start - WINDOW_SEC).catch(() => null),

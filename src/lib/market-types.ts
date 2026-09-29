@@ -11,6 +11,8 @@ export type WindowView = {
   remaining: number;
   complete: boolean;
   path: PricePoint[];
+  /** Moyenne Chainlink déjà acquise dans la dernière minute (règlement TWAP 60 s), sinon null. */
+  last60?: number | null;
 };
 
 export type Snapshot =

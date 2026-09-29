@@ -80,9 +80,15 @@ export function settlementPnl(stake: number, ask: number, won: boolean, feeRate 
 export type Fair = { pUp: number; breakeven: number; z: number };
 
 /**
- * P(Up) that the window TWAP finishes at or above the opening price.
- * Remaining path is a driftless random walk; the uncertainty is on the
- * average of what's left, not on a single end print.
+ * P(Up) selon la règle de règlement Polymarket (depuis le 14 août 2026) :
+ * Up si la TWAP Chainlink des 60 dernières secondes de la fenêtre est au moins
+ * égale à celle des 60 s qui précèdent l'ouverture (`strike`, le prix à battre).
+ * Prix en marche aléatoire sans dérive, sigma en $/√s.
+ * - Plus de 60 s restantes : moyenne finale ~ prix actuel, variance σ²(R − 40).
+ * - Moins de 60 s : la partie déjà écoulée de la minute finale est acquise
+ *   (`lockedAvg`, sinon on prend le prix actuel).
+ * `twap` (moyenne depuis l'ouverture) n'entre plus dans le calcul : c'était
+ * l'ancienne règle, et il gonflait la confiance jusqu'à 100 %.
  */
 export function fairUp(input: {
   strike: number;
@@ -91,21 +97,31 @@ export function fairUp(input: {
   elapsedSec: number;
   remainingSec: number;
   sigmaPerSqrtSec: number;
+  lockedAvg?: number | null;
 }): Fair {
-  const elapsed = Math.max(0, input.elapsedSec);
   const remaining = Math.max(0, input.remainingSec);
-  const total = elapsed + remaining;
-  if (!(input.strike > 0) || !(input.price > 0) || total <= 0) {
+  const sigma = input.sigmaPerSqrtSec;
+  if (!(input.strike > 0) || !(input.price > 0)) {
     return { pUp: 0.5, breakeven: input.strike, z: 0 };
   }
+  const locked = input.lockedAvg != null && input.lockedAvg > 0 ? input.lockedAvg : input.price;
   if (remaining < 1) {
-    const up = input.twap >= input.strike;
-    return { pUp: up ? 0.985 : 0.015, breakeven: input.price, z: up ? 3 : -3 };
+    const up = locked >= input.strike;
+    return { pUp: up ? 0.985 : 0.015, breakeven: input.strike, z: up ? 3 : -3 };
   }
-  const locked = input.twap * elapsed;
-  const breakeven = (input.strike * total - locked) / remaining;
-  const std = Math.max(0.5, input.sigmaPerSqrtSec * Math.sqrt(remaining / 3));
-  const z = clamp((input.price - breakeven) / std, -6, 6);
+  let mean: number;
+  let std: number;
+  let breakeven: number;
+  if (remaining >= 60) {
+    mean = input.price;
+    std = sigma * Math.sqrt(remaining - 40);
+    breakeven = input.strike;
+  } else {
+    mean = (locked * (60 - remaining) + input.price * remaining) / 60;
+    std = (sigma * remaining * Math.sqrt(remaining / 3)) / 60;
+    breakeven = (input.strike * 60 - locked * (60 - remaining)) / remaining;
+  }
+  const z = clamp((mean - input.strike) / Math.max(0.5, std), -6, 6);
   return { pUp: normalCdf(z), breakeven, z };
 }
 

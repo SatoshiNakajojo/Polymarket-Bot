@@ -231,6 +231,7 @@ async function tick(disk: Disk) {
     elapsedSec: Math.max(0, now - snap.live.start),
     remainingSec: Math.max(0, snap.live.end - now),
     sigmaPerSqrtSec: snap.sigmaPerSqrtSec,
+    lockedAvg: snap.live.last60,
   });
   const decision = decide({
     remainingSec: Math.max(0, snap.live.end - now),
