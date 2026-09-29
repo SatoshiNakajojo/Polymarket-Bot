@@ -32,6 +32,10 @@ export type MakerParams = {
   maxPrice: number;
   /** Écart acheteur/vendeur maximum pour coter. */
   maxSpread: number;
+  /** Anti-choc : si le milieu du carnet Up bouge de cet écart en 5 s, on retire nos ordres (0 = jamais). */
+  pauseJump: number;
+  /** Durée du retrait après un choc (s). */
+  pauseSec: number;
 };
 
 export const DEFAULT_PARAMS: MakerParams = {
@@ -42,6 +46,8 @@ export const DEFAULT_PARAMS: MakerParams = {
   minPrice: 0.05,
   maxPrice: 0.95,
   maxSpread: 0.05,
+  pauseJump: 0,
+  pauseSec: 10,
 };
 
 type Book = { bids: Level[]; asks: Level[] };
@@ -69,6 +75,8 @@ export class MakerSim {
   shares: Record<Side, number> = { Up: 0, Down: 0 };
   cost: Record<Side, number> = { Up: 0, Down: 0 };
   fills: Fill[] = [];
+  pausedUntil = 0;
+  private mids: { t: number; mid: number }[] = [];
 
   constructor(params: Partial<MakerParams> = {}) {
     this.params = { ...DEFAULT_PARAMS, ...params };
@@ -89,6 +97,7 @@ export class MakerSim {
   /** Carnet complet d'un côté. */
   onBook(side: Side, bids: Level[], asks: Level[], t: number) {
     this.books[side] = { bids: [...bids], asks: [...asks] };
+    if (side === "Up") this.watchJump(t);
     const o = this.orders[side];
     if (o) o.ahead = Math.min(o.ahead, this.sizeAt(side, o.price));
     this.checkCross(side, t);
@@ -105,6 +114,7 @@ export class MakerSim {
     } else {
       list.push({ price, size });
     }
+    if (side === "Up") this.watchJump(t);
     const o = this.orders[side];
     if (o && bookSide === "bid" && Math.abs(o.price - price) < EPS) o.ahead = Math.min(o.ahead, Math.max(0, size));
     if (bookSide === "ask") this.checkCross(side, t);
@@ -121,6 +131,21 @@ export class MakerSim {
     const through = size - o.ahead;
     o.ahead = Math.max(0, o.ahead - size);
     if (through > EPS) this.fill(side, Math.min(through, o.size - o.filled), t, "file");
+  }
+
+  /** Anti-choc : retient le milieu du carnet Up sur 5 s et déclenche une pause s'il saute. */
+  private watchJump(t: number) {
+    if (!(this.params.pauseJump > 0)) return;
+    const bid = this.bestBid("Up");
+    const ask = this.bestAsk("Up");
+    if (bid == null || ask == null) return;
+    this.mids.push({ t, mid: (bid + ask) / 2 });
+    this.mids = this.mids.filter((m) => m.t >= t - 5);
+    const mids = this.mids.map((m) => m.mid);
+    if (Math.max(...mids) - Math.min(...mids) >= this.params.pauseJump - EPS) {
+      this.pausedUntil = t + this.params.pauseSec;
+      this.orders = { Up: null, Down: null };
+    }
   }
 
   private checkCross(side: Side, t: number) {
@@ -147,7 +172,7 @@ export class MakerSim {
   requote(t: number, remaining: number) {
     const p = this.params;
     for (const side of ["Up", "Down"] as const) {
-      const target = remaining < p.stopBeforeEnd ? null : this.target(side);
+      const target = remaining < p.stopBeforeEnd || t < this.pausedUntil ? null : this.target(side);
       const o = this.orders[side];
       if (target == null) {
         this.orders[side] = null;
@@ -195,3 +220,11 @@ export class MakerSim {
     };
   }
 }
+
+/** Les réglages suivis en parallèle, sur le même flux. */
+export const VARIANTS: { key: string; label: string; params: Partial<MakerParams> }[] = [
+  { key: "base", label: "Base", params: {} },
+  { key: "prudent", label: "Prudent", params: { maxImbalance: 5, stopBeforeEnd: 60, maxSpread: 0.03 } },
+  { key: "large", label: "Large", params: { maxImbalance: 30 } },
+  { key: "antichoc", label: "Anti-choc", params: { pauseJump: 0.03, pauseSec: 10 } },
+];

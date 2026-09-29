@@ -4,13 +4,14 @@
  * tourner 24 h/24 sur le VPS, à côté du bot réel.
  *   npm run paper
  */
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { loadJournal, type Journal } from "./journal-data.ts";
 import { startJournal } from "./journal.ts";
 import { groupWindows, strategies, summarize, verdictOf, type WindowRows } from "./strategies.ts";
 
 const DIR = process.env.JOURNAL_DIR ?? "data/journal";
 const SCORE_FILE = `${DIR}/papier.json`;
+const LIVE_FILE = `${DIR}/papier-live.json`;
 const MIN_TRADES = 100;
 const since = Math.floor(Date.now() / 1000);
 const printed = new Map<string, number>();
@@ -30,13 +31,18 @@ function live(journal: Journal) {
     up: 0,
     previousUp: upOf.get(current - 300) ?? null,
   };
+  const orders: { cle: string; nom: string; ordres: string[] }[] = [];
   for (const s of strategies()) {
     const trace = s.run(win, "instant")?.trace ?? [];
     const key = `${s.key}:${current}`;
     const done = printed.get(key) ?? 0;
     for (const line of trace.slice(done)) console.log(`papier · fenêtre ${clock(current)} · ${s.label} · ${line}`);
     printed.set(key, trace.length);
+    orders.push({ cle: s.key, nom: s.label, ordres: trace });
   }
+  // Pour la page web : les ordres papier de la fenêtre en cours.
+  writeFileSync(`${LIVE_FILE}.tmp`, JSON.stringify({ majA: new Date().toISOString(), fenetre: current, strategies: orders }));
+  renameSync(`${LIVE_FILE}.tmp`, LIVE_FILE);
   for (const key of printed.keys()) {
     if (Number(key.split(":")[1]) < current - 3600) printed.delete(key);
   }

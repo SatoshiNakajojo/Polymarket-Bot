@@ -24,6 +24,7 @@ import {
 } from "@/lib/format";
 import type { Snapshot } from "@/lib/market-types";
 import { getMarketSnapshot } from "@/lib/snapshot";
+import { Lab } from "@/components/lab";
 import { connectLive, depositBridgeAddress, disconnectLive, getLiveSession, placeLiveOrder, placeLiveSell, readWalletBalances, redeemWinnings, returnCashToMetaMask, subscribeLive, type WalletBalances } from "@/lib/live";
 import { adoptEquity, equitySnapshot, noteEquity, subscribeEquity } from "@/lib/equity";
 import { readEquity, readHistory, saveHistory, type HistoryFile } from "@/lib/history";
@@ -734,6 +735,7 @@ export function Desk() {
         <Portfolio cash={cash} wallet={session?.wallet ?? null} mode={mode} />
       )}
       <Journal books={books} paperOn={paperOn} liveFills={liveFills} nowSec={nowSec} mode={mode} />
+      <Lab />
       <p className="mt-6 max-w-3xl text-xs leading-relaxed text-mist">
         Le papier et le réel se règlent sur le résultat Polymarket, donc le TWAP Chainlink.
         Le prix vient de ce flux. En réel, l'ordre est un achat FAK signé dans cet onglet : la clé n'est pas enregistrée et

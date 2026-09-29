@@ -103,3 +103,17 @@ test("quand le prix monte, notre ordre sur l'autre côté est exécuté au passa
   assert.equal(sim.shares.Down, 20);
   assert.ok(Math.abs(sim.settle("Up").pairPnl - 0.2) < 1e-9);
 });
+
+test("anti-choc : un saut du carnet retire les ordres pendant la pause", () => {
+  const sim = new MakerSim({ pauseJump: 0.03, pauseSec: 10 });
+  const up = () => sim.orders.Up;
+  market(sim, 0.5, 0.51, 100, 100, 0);
+  sim.requote(0, 200);
+  assert.equal(up()?.price, 0.5);
+  market(sim, 0.54, 0.55, 100, 100, 2);
+  assert.equal(up(), null);
+  sim.requote(3, 200);
+  assert.equal(up(), null, "toujours en pause");
+  sim.requote(13, 190);
+  assert.equal(up()?.price, 0.54, "reprise après la pause");
+});
