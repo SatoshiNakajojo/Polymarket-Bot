@@ -21,10 +21,17 @@ export type SpendState = {
   hedgedWindow?: number | null;
 };
 
+/** Fenêtre en cours à l'instant `nowSec` : on refuse le passé et le futur lointain. */
+function staleWindow(windowStart: number, nowSec: number | undefined): boolean {
+  if (nowSec == null) return false;
+  return windowStart < nowSec - 300 - 5 || windowStart > nowSec + 60;
+}
+
 export function vetOrder(
   body: unknown,
   limits: { maxStake: number; lossCap: number },
   state: SpendState,
+  nowSec?: number,
 ): { ok: true; order: OrderRequest } | { ok: false; message: string } {
   if (body == null || typeof body !== "object") return { ok: false, message: "Corps d'ordre illisible." };
   const raw = body as Record<string, unknown>;
@@ -43,6 +50,7 @@ export function vetOrder(
   if (!Number.isFinite(windowStart) || slugMatch[1] !== String(windowStart)) {
     return { ok: false, message: "La fenêtre ne correspond pas au marché." };
   }
+  if (staleWindow(windowStart, nowSec)) return { ok: false, message: "Ce n'est pas la fenêtre en cours." };
   const ceiling = hedge ? limits.lossCap : limits.maxStake;
   if (!Number.isFinite(amount) || amount < 1 || amount > ceiling) {
     return { ok: false, message: `Mise hors plafond (1 à ${ceiling} $).` };
@@ -62,7 +70,7 @@ export function vetOrder(
   return { ok: true, order: { assetId, amount, maxPrice, windowStart, slug, hedge } };
 }
 
-export function vetSell(body: unknown): { ok: true; sell: SellRequest } | { ok: false; message: string } {
+export function vetSell(body: unknown, nowSec?: number): { ok: true; sell: SellRequest } | { ok: false; message: string } {
   if (body == null || typeof body !== "object") return { ok: false, message: "Corps d'ordre illisible." };
   const raw = body as Record<string, unknown>;
   const assetId = typeof raw.assetId === "string" ? raw.assetId.trim() : "";
@@ -78,6 +86,7 @@ export function vetSell(body: unknown): { ok: true; sell: SellRequest } | { ok: 
   if (!Number.isFinite(windowStart) || slugMatch[1] !== String(windowStart)) {
     return { ok: false, message: "La fenêtre ne correspond pas au marché." };
   }
+  if (staleWindow(windowStart, nowSec)) return { ok: false, message: "Ce n'est pas la fenêtre en cours." };
   if (!Number.isFinite(shares) || shares < 0.1 || shares > 500) {
     return { ok: false, message: "Nombre de parts hors limite." };
   }

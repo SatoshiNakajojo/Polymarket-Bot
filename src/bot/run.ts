@@ -14,6 +14,7 @@ import {
 } from "@/lib/engine.ts";
 import { connectLive, placeLiveOrder, placeLiveSell } from "@/lib/live.ts";
 import { loadSnapshot } from "@/lib/market-data.server.ts";
+import { officialOutcome } from "./journal.ts";
 import { builderFromEnv, hasKey, readKey } from "./key.ts";
 import { vetOrder } from "./policy.ts";
 
@@ -37,7 +38,8 @@ const waitMin = Number(process.env.FENETRE_WAIT ?? 3);
 const earlyPrice = Number(process.env.FENETRE_EARLY ?? 75) / 100;
 const invert = process.env.FENETRE_INVERT === "1";
 const pair = process.env.FENETRE_PAIR === "1";
-const btcStop = process.env.FENETRE_BTC_STOP !== "0" && !pair;
+// Le stop BTC est perdant sur le journal (voir npm run journal:strategies) : il faut le demander.
+const btcStop = process.env.FENETRE_BTC_STOP === "1" && !pair;
 const armed = process.env.FENETRE_ARMED !== "0";
 const local = hasKey();
 const remote = Boolean(process.env.SIGNER_URL);
@@ -130,6 +132,27 @@ function drawdown(disk: Disk): number {
   return pending + Math.max(0, -pnl);
 }
 
+let lastOldCheck = 0;
+
+/**
+ * Les résultats récents viennent du snapshot (6 dernières fenêtres). Si le bot a
+ * été arrêté plus longtemps, les positions plus anciennes restaient « en cours »
+ * pour toujours et gonflaient le risque compté : on les règle via Polymarket.
+ */
+async function settleOld(disk: Disk, now: number, recent: Set<number>): Promise<boolean> {
+  if (now - lastOldCheck < 60) return false;
+  lastOldCheck = now;
+  let changed = false;
+  for (const fill of disk.fills) {
+    if (fill.result || recent.has(fill.window) || now < fill.window + 360) continue;
+    const outcome = await officialOutcome(fill.window).catch(() => null);
+    if (!outcome) continue;
+    fill.result = outcome === fill.side ? "win" : "loss";
+    changed = true;
+  }
+  return changed;
+}
+
 async function tick(disk: Disk) {
   const snap = await loadSnapshot();
   if (!snap.ok) {
@@ -145,6 +168,7 @@ async function tick(disk: Disk) {
     fill.result = row.outcome === fill.side ? "win" : "loss";
     settledChanged = true;
   }
+  if (await settleOld(disk, snap.serverNow, new Set(snap.settled.map((row) => row.start)))) settledChanged = true;
   if (settledChanged) saveDisk(disk);
   const market = snap.market;
   const open = disk.fills.filter((fill) => fill.window === snap.live.start && !fill.result);
@@ -189,7 +213,8 @@ async function tick(disk: Disk) {
             hedge: true,
           });
           if (placed.ok) {
-            disk.fills.push({ window: snap.live.start, side: other, stake: usd, ask: otherAsk, btc: snap.price });
+            const paid = placed.filledUsd && placed.filledUsd > 0 ? placed.filledUsd : usd;
+            disk.fills.push({ window: snap.live.start, side: other, stake: paid, ask: otherAsk, btc: snap.price });
             saveDisk(disk);
           }
           console.log(placed.ok ? `couverture ${other} ${usd}$` : `couverture refusée: ${placed.message ?? ""}`);
@@ -254,6 +279,7 @@ async function tick(disk: Disk) {
       order,
       { maxStake: stake, lossCap },
       { spent: atRisk, lastWindow: disk.windows[0] ?? null },
+      snap.serverNow,
     );
     if (!verdict.ok) {
       console.log(verdict.message);
@@ -263,18 +289,24 @@ async function tick(disk: Disk) {
   disk.windows = [snap.live.start, ...disk.windows].slice(0, 40);
   saveDisk(disk);
   const placed = await sendBuy(order);
+  // Le montant réellement exécuté, pas la mise demandée (un FAK peut n'être rempli qu'en partie).
+  const paid = placed.ok && placed.filledUsd && placed.filledUsd > 0 ? placed.filledUsd : stake;
   if (placed.ok) {
-    disk.fills.push({ window: snap.live.start, side: decision.side, stake, ask: decision.ask, btc: snap.price });
+    disk.fills.push({ window: snap.live.start, side: decision.side, stake: paid, ask: decision.ask, btc: snap.price });
     saveDisk(disk);
   }
   console.log(
     placed.ok
-      ? `ordre ${placed.orderId} ${decision.side} ${stake}$`
+      ? `ordre ${placed.orderId} ${decision.side} ${paid.toFixed(2)}$`
       : `refusé: ${placed.message ?? "sans détail"}`,
   );
 }
 
 const disk = loadDisk();
+console.log(
+  `Réglages : mise ${stake}$ · écart min ${Math.round(minEdge * 100)} c · plafond ${lossCap}$ · attente ${waitMin} min · seuil ${Math.round(earlyPrice * 100)}/${100 - Math.round(earlyPrice * 100)} · ` +
+    `${invert ? "inversé" : "normal"}${pair ? " · double" : ""} · stop BTC ${btcStop ? "activé" : "désactivé"} · ${armed ? "ARMÉ (argent réel)" : "en veille"}`,
+);
 if (local) {
   const session = await connectLive(readKey(), process.env.POLY_FUNDER ?? "", builderFromEnv());
   console.log(`Bot sur cette machine · ${session.wallet} · plafond ${lossCap}$.`);

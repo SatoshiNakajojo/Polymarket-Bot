@@ -241,7 +241,8 @@ export async function connectLive(
         worst = level.price;
         if (notional >= order.amount - 0.01) break;
       }
-      if (!(shares >= Number(book.minOrderSize) || shares >= 5) || !(notional >= 1)) {
+      const minSize = Number(book.minOrderSize) > 0 ? Number(book.minOrderSize) : 5;
+      if (!(shares >= minSize) || !(notional >= 1)) {
         return { ok: false, message: "Personne ne vend à ce prix." };
       }
       const maxPrice = Math.min(0.99, Math.round(Math.ceil(worst / tick - 1e-9) * tick * 1000) / 1000);
@@ -253,29 +254,42 @@ export async function connectLive(
         orderType: OrderType.FAK,
       });
       if (!response.ok) return { ok: false, message: response.message };
+      // Un FAK peut être accepté sans rien exécuter : dans ce cas, aucune position n'existe.
       const filledUsd = Number(response.makingAmount);
+      if (!(filledUsd > 0)) return { ok: false, message: "Ordre accepté mais rien exécuté : le prix est parti." };
       return {
         ok: true,
         orderId: response.orderId,
         status: String(response.status),
-        filledUsd: filledUsd > 0 ? filledUsd : order.amount,
+        filledUsd,
       };
     },
     async sell(order: { tokenId: string; shares: number; minPrice: number }) {
       const book = await client.fetchOrderBook({ assetId: order.tokenId });
-      const shares = Math.floor(order.shares * 100) / 100;
-      if (!(shares >= Number(book.minOrderSize) || shares >= 5)) {
-        return { ok: false, message: "Trop peu de parts à revendre." };
+      const minSize = Number(book.minOrderSize) > 0 ? Number(book.minOrderSize) : 5;
+      const attempt = async (shares: number) =>
+        client.placeMarketOrder({
+          assetId: order.tokenId,
+          side: OrderSide.SELL,
+          shares,
+          minPrice: Math.max(0.01, order.minPrice),
+          orderType: OrderType.FAK,
+        });
+      let shares = Math.floor(order.shares * 100) / 100;
+      if (!(shares >= minSize)) return { ok: false as const, message: "Trop peu de parts à revendre." };
+      let response = await attempt(shares);
+      // Les frais peuvent être prélevés en parts : on détient alors un peu moins que prévu.
+      if (!response.ok) {
+        const fewer = Math.floor(shares * 0.97 * 100) / 100;
+        if (fewer >= minSize) {
+          shares = fewer;
+          response = await attempt(shares);
+        }
       }
-      const response = await client.placeMarketOrder({
-        assetId: order.tokenId,
-        side: OrderSide.SELL,
-        shares,
-        minPrice: Math.max(0.01, order.minPrice),
-        orderType: OrderType.FAK,
-      });
-      if (!response.ok) return { ok: false, message: response.message };
-      return { ok: true, orderId: response.orderId, status: String(response.status) };
+      if (!response.ok) return { ok: false as const, message: response.message };
+      const sold = Number(response.makingAmount);
+      if (!(sold > 0)) return { ok: false as const, message: "Vente acceptée mais rien exécuté : personne n'achète à ce prix." };
+      return { ok: true as const, orderId: response.orderId, status: String(response.status), shares: sold };
     },
     close: () => client.endAuthentication().then(() => undefined),
   };

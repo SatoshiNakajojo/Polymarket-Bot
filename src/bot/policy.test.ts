@@ -56,3 +56,11 @@ test("accepte une seule couverture sur la fenêtre déjà prise", () => {
   const second = vetOrder(order, limits, { spent: 20, lastWindow: 9, hedgedWindow: 9 });
   assert.equal(second.ok, false);
 });
+
+test("refuse une fenêtre passée ou lointaine quand on donne l'heure", () => {
+  const order = { assetId: "1".repeat(20), amount: 5, maxPrice: 0.5, windowStart: 1_700_000_100, slug: "btc-updown-5m-1700000100" };
+  assert.equal(vetOrder(order, limits, fresh, 1_700_000_250).ok, true, "fenêtre en cours");
+  assert.equal(vetOrder(order, limits, fresh, 1_700_001_000).ok, false, "fenêtre passée");
+  assert.equal(vetOrder(order, limits, fresh, 1_699_990_000).ok, false, "fenêtre lointaine");
+  assert.equal(vetOrder(order, limits, fresh).ok, true, "sans heure : pas de contrôle");
+});

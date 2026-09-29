@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connectLive, placeLiveOrder, placeLiveSell } from "@/lib/live.ts";
 import { builderFromEnv, readKey } from "./key.ts";
@@ -40,8 +42,70 @@ const token = process.env.SIGNER_TOKEN ?? "";
 if (token.length < 16) throw new Error("SIGNER_TOKEN doit faire au moins 16 caractères.");
 
 const maxStake = Number(process.env.FENETRE_STAKE ?? 10);
+/** Volume maximum accepté sur 24 h glissantes. */
 const lossCap = Number(process.env.FENETRE_CAP ?? 80);
-const state: SpendState = { spent: 0, lastWindow: null, hedgedWindow: null };
+const DAY = 24 * 3600;
+const stateFile = process.env.SIGNER_STATE ?? "data/signer-etat.json";
+
+type Ledger = { orders: { t: number; amount: number }[]; lastWindow: number | null; hedgedWindow: number | null };
+
+/**
+ * Le plafond compte le volume des 24 dernières heures, enregistré sur disque :
+ * il ne se bloque plus pour de bon après quelques ordres, et un redémarrage ne
+ * le remet pas à zéro.
+ */
+function loadLedger(): Ledger {
+  try {
+    const raw = JSON.parse(readFileSync(stateFile, "utf8")) as Partial<Ledger>;
+    return {
+      orders: Array.isArray(raw.orders) ? raw.orders.filter((o) => Number.isFinite(o.t) && Number.isFinite(o.amount)) : [],
+      lastWindow: typeof raw.lastWindow === "number" ? raw.lastWindow : null,
+      hedgedWindow: typeof raw.hedgedWindow === "number" ? raw.hedgedWindow : null,
+    };
+  } catch {
+    return { orders: [], lastWindow: null, hedgedWindow: null };
+  }
+}
+
+function saveLedger(ledger: Ledger) {
+  mkdirSync(dirname(stateFile), { recursive: true });
+  writeFileSync(stateFile, JSON.stringify(ledger));
+}
+
+const ledger = loadLedger();
+const nowSec = () => Date.now() / 1000;
+function spendState(): SpendState {
+  const since = nowSec() - DAY;
+  ledger.orders = ledger.orders.filter((o) => o.t >= since);
+  return {
+    spent: ledger.orders.reduce((sum, o) => sum + o.amount, 0),
+    lastWindow: ledger.lastWindow,
+    hedgedWindow: ledger.hedgedWindow,
+  };
+}
+
+/** Jetons Up et Down du marché annoncé, lus chez Polymarket (on refuse si on ne peut pas vérifier). */
+const tokenCache = new Map<string, Set<string>>();
+async function marketTokens(slug: string): Promise<Set<string> | null> {
+  const cached = tokenCache.get(slug);
+  if (cached) return cached;
+  try {
+    const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${encodeURIComponent(slug)}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const events = (await res.json()) as { markets?: { clobTokenIds?: unknown }[] }[];
+    const raw = events[0]?.markets?.[0]?.clobTokenIds;
+    const ids = Array.isArray(raw) ? raw : typeof raw === "string" ? (JSON.parse(raw) as unknown[]) : [];
+    if (ids.length === 0) return null;
+    const set = new Set(ids.map(String));
+    tokenCache.set(slug, set);
+    if (tokenCache.size > 50) tokenCache.delete(tokenCache.keys().next().value as string);
+    return set;
+  } catch {
+    return null;
+  }
+}
 
 const session = await connectLive(readKey(), process.env.POLY_FUNDER ?? "", builderFromEnv());
 const host = process.env.SIGNER_HOST ?? "127.0.0.1";
@@ -54,13 +118,18 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && req.url === "/health") {
-      send(res, 200, { ok: true, wallet: session.wallet, spent: state.spent });
+      send(res, 200, { ok: true, wallet: session.wallet, spent24h: spendState().spent, cap24h: lossCap });
       return;
     }
     if (req.method === "POST" && req.url === "/order") {
-      const verdict = vetOrder(await readBody(req), { maxStake, lossCap }, state);
+      const verdict = vetOrder(await readBody(req), { maxStake, lossCap }, spendState(), nowSec());
       if (!verdict.ok) {
         send(res, 400, verdict);
+        return;
+      }
+      const tokens = await marketTokens(verdict.order.slug);
+      if (!tokens?.has(verdict.order.assetId)) {
+        send(res, 400, { ok: false, message: "Ce jeton n'appartient pas au marché annoncé (ou Polymarket est injoignable)." });
         return;
       }
       const placed = await placeLiveOrder({
@@ -69,9 +138,10 @@ const server = createServer(async (req, res) => {
         maxPrice: verdict.order.maxPrice,
       });
       if (placed.ok) {
-        if (verdict.order.hedge) state.hedgedWindow = verdict.order.windowStart;
-        else state.lastWindow = verdict.order.windowStart;
-        state.spent += verdict.order.amount;
+        if (verdict.order.hedge) ledger.hedgedWindow = verdict.order.windowStart;
+        else ledger.lastWindow = verdict.order.windowStart;
+        ledger.orders.push({ t: nowSec(), amount: placed.filledUsd > 0 ? placed.filledUsd : verdict.order.amount });
+        saveLedger(ledger);
       }
       console.log(
         placed.ok
@@ -82,9 +152,14 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/sell") {
-      const verdict = vetSell(await readBody(req));
+      const verdict = vetSell(await readBody(req), nowSec());
       if (!verdict.ok) {
         send(res, 400, verdict);
+        return;
+      }
+      const tokens = await marketTokens(verdict.sell.slug);
+      if (!tokens?.has(verdict.sell.assetId)) {
+        send(res, 400, { ok: false, message: "Ce jeton n'appartient pas au marché annoncé (ou Polymarket est injoignable)." });
         return;
       }
       const placed = await placeLiveSell({
@@ -111,6 +186,7 @@ server.listen(port, host, () => {
       ? `Signer ${session.wallet} sur ${host}:${port}. Joignable seulement ici. Pour le VPS, SIGNER_HOST = adresse Tailscale du Pi.`
       : `Signer ${session.wallet} sur ${host}:${port}. La clé ne quitte pas cette machine.`,
   );
+  console.log(`Plafond : ${maxStake}$ par ordre, ${lossCap}$ de volume sur 24 h glissantes (déjà ${spendState().spent.toFixed(2)}$).`);
   if (host === "0.0.0.0" || host === "::") {
     console.warn("Ouvert sur toutes les interfaces. Réserve ça à Tailscale, jamais à Internet.");
   }
