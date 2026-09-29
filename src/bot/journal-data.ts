@@ -6,6 +6,7 @@ export type Row = {
   elapsed: number;
   remaining: number;
   spot: number | null;
+  strike: number | null;
   sigma: number | null;
   pModel: number;
   upBid: number | null;
@@ -77,6 +78,7 @@ export function loadJournal(dir: string): Journal {
         elapsed: Number(get("elapsed")),
         remaining: Number(get("remaining")),
         spot: num(get("spot")),
+        strike: num(get("strike")),
         sigma: num(get("sigma")),
         pModel,
         upBid: num(get("up_bid")),

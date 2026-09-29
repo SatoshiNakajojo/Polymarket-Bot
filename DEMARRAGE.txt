@@ -30,3 +30,6 @@ Le modèle appris (élan du BTC + carnet Polymarket), une fois le journal bien r
    npm run journal:train
 Il s'entraîne sur les fenêtres passées et se teste sur celles qu'il n'a jamais vues.
 Il ne vaut quelque chose que s'il dit « bat le marché sur des fenêtres jamais vues ».
+
+Le backtest des stratégies (Normal, Inversé, Stop, Double, martingale, nouvelles idées) :
+   npm run journal:strategies

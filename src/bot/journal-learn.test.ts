@@ -35,6 +35,7 @@ const base: Row = {
   elapsed: 60,
   remaining: 240,
   spot: 100_000,
+  strike: 99_990,
   sigma: 5,
   pModel: 0.6,
   upBid: 0.54,
