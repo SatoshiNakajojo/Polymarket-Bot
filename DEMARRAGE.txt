@@ -48,3 +48,18 @@ Sur le VPS :
 Résultats par fenêtre dans data/maker/resultats.jsonl.
 Réglages (facultatifs) : MAKER_SIZE (parts par ordre, 10), MAKER_IMBALANCE (déséquilibre max, 10),
 MAKER_MAX_SIDE (parts max par côté et par fenêtre, 100), MAKER_STOP (arrêt avant la fin, 45 s).
+
+La ferme de stratégies (aucun ordre, aucune clé) :
+   npm run ferme
+Elle part des stratégies déjà testées, en fait pousser des variantes sur le
+début du journal, puis juge les meilleures sur la fin du journal — des
+fenêtres qu'elles n'ont jamais vues — contre le même jeu à pile ou face.
+Seules celles qui battent le hasard, après correction pour le nombre
+d'essais, sont promues : le suivi papier (npm run paper) les ajoute alors
+tout seul à son tableau, sous le nom « Ferme · … ». Jamais au bot réel.
+Sur le VPS, une récolte toutes les 6 h :
+   pm2 start npm --name fenetre-ferme -- run ferme -- --boucle 6
+   pm2 save
+Résultats dans data/ferme/ferme.json (lu par le vaisseau mère).
+Il faut un journal d'au moins 100 fenêtres ; le verdict n'a de poids
+qu'avec plusieurs milliers (quelques semaines de journal).
