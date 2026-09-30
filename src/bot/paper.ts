@@ -4,15 +4,41 @@
  * tourner 24 h/24 sur le VPS, à côté du bot réel.
  *   npm run paper
  */
-import { renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { enStrategie, estValide, type Genome } from "./ferme-familles.ts";
 import { loadJournal, type Journal } from "./journal-data.ts";
 import { startJournal } from "./journal.ts";
-import { groupWindows, strategies, summarize, verdictOf, type WindowRows } from "./strategies.ts";
+import { groupWindows, strategies as bureau, summarize, verdictOf, type Strategy, type WindowRows } from "./strategies.ts";
 
 const DIR = process.env.JOURNAL_DIR ?? "data/journal";
 const SCORE_FILE = `${DIR}/papier.json`;
 const LIVE_FILE = `${DIR}/papier-live.json`;
 const MIN_TRADES = 100;
+const PROMUES = `${process.env.FERME_DIR ?? "data/ferme"}/promues.json`;
+
+/* Les stratégies promues par la ferme (npm run ferme) rejoignent le suivi
+   papier : c'est là, en direct et sur des fenêtres futures, qu'elles
+   confirment — ou non — ce qu'elles ont montré sur le passé. */
+let promues: { t: number; liste: Strategy[] } = { t: -1, liste: [] };
+function strategiesPromues(): Strategy[] {
+  let t: number;
+  try {
+    t = statSync(PROMUES).mtimeMs;
+  } catch {
+    return [];
+  }
+  if (t !== promues.t) {
+    try {
+      const d = JSON.parse(readFileSync(PROMUES, "utf8")) as { strategies?: { id: string; genome: Genome }[] };
+      const liste = (d.strategies ?? []).filter((s) => estValide(s.genome)).map((s) => enStrategie(s.genome, `ferme:${s.id}`));
+      promues = { t, liste };
+    } catch {
+      /* fichier en cours d'écriture : on garde la liste d'avant */
+    }
+  }
+  return promues.liste;
+}
+const strategies = () => [...bureau(), ...strategiesPromues()];
 const since = Math.floor(Date.now() / 1000);
 const printed = new Map<string, number>();
 let lastResolved = -1;

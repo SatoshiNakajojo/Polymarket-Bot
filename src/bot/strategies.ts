@@ -16,15 +16,15 @@ export type Strategy = {
 };
 export type WindowRows = { window: number; rows: Row[]; up: 0 | 1; previousUp: 0 | 1 | null };
 
-const STAKE = 5;
-const other = (s: Side): Side => (s === "Up" ? "Down" : "Up");
-const askOf = (r: Row, s: Side) => (s === "Up" ? r.upAsk : r.downAsk);
-const bidOf = (r: Row, s: Side) => (s === "Up" ? r.upBid : r.downBid);
+export const STAKE = 5;
+export const other = (s: Side): Side => (s === "Up" ? "Down" : "Up");
+export const askOf = (r: Row, s: Side) => (s === "Up" ? r.upAsk : r.downAsk);
+export const bidOf = (r: Row, s: Side) => (s === "Up" ? r.upBid : r.downBid);
 
 type Leg = { side: Side; shares: number };
 
 /** Petit carnet de compte d'une fenêtre. */
-class Book {
+export class Book {
   cash = 0;
   volume = 0;
   legs = 0;
@@ -124,7 +124,7 @@ export function botSide(w: WindowRows, i: number, invert: boolean): Side | null 
   return d.action === "buy" ? d.side : null;
 }
 
-function firstEntry(w: WindowRows, invert: boolean): { i: number; side: Side } | null {
+export function firstEntry(w: WindowRows, invert: boolean): { i: number; side: Side } | null {
   for (let i = 0; i < w.rows.length; i++) {
     const side = botSide(w, i, invert);
     if (side) return { i, side };
@@ -222,7 +222,7 @@ function simple(pick: (r: Row, w: WindowRows, i: number) => Side | null) {
   };
 }
 
-const favorite = (r: Row): Side | null =>
+export const favorite = (r: Row): Side | null =>
   r.upAsk == null || r.downAsk == null ? null : r.upAsk >= r.downAsk ? "Up" : "Down";
 
 /** Entrée du bot, puis vente dès que le côté tenu vaut `target` ou plus. */
