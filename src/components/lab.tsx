@@ -45,6 +45,7 @@ const SECTIONS = [
   { id: "fenetres", label: "Fenêtres" },
   { id: "teneur", label: "Teneur de marché" },
   { id: "strategies", label: "Stratégies" },
+  { id: "ia", label: "IA" },
 ];
 
 /** Barre qui reste en haut pendant le défilement, pour sauter à chaque partie de la page. */
@@ -111,6 +112,7 @@ export function Lab() {
       <Windows windows={lab.fenetres} />
       <Maker lab={lab} />
       <Paper lab={lab} />
+      <Ia lab={lab} />
     </>
   );
 }
@@ -144,6 +146,13 @@ function Services({ lab }: { lab: LabData }) {
             ? "carnet lu toutes les 3 s"
             : null,
     },
+    {
+      name: "IA",
+      command: "pm2 start npm --name fenetre-ia -- run ia -- --boucle",
+      age: ago(lab.services.ia.majA, now),
+      limit: 7 * 3600,
+      detail: "réentraînée toutes les 6 h",
+    },
   ];
   return (
     <section
@@ -154,7 +163,7 @@ function Services({ lab }: { lab: LabData }) {
       <p className="mt-1 text-xs text-mist">
         Aucun de ces programmes ne passe d'ordre réel ni ne lit de clé.
       </p>
-      <ul className="mt-3 grid gap-2 sm:grid-cols-3">
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {rows.map((row) => {
           const alive = row.age != null && row.age <= row.limit;
           return (
@@ -171,7 +180,7 @@ function Services({ lab }: { lab: LabData }) {
                 {row.age == null
                   ? "jamais lancé ici"
                   : alive
-                    ? `à jour il y a ${row.age} s`
+                    ? `à jour il y a ${duration(row.age)}`
                     : `silencieux depuis ${duration(row.age)}`}
                 {row.detail ? ` · ${row.detail}` : ""}
               </p>
@@ -565,6 +574,151 @@ function Paper({ lab }: { lab: LabData }) {
               </tbody>
             </table>
           </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function verdictTone(verdict: string) {
+  if (verdict === "BAT LE MARCHÉ" || verdict === "prometteur, à confirmer" || verdict === "MEILLEUR")
+    return "text-up";
+  if (verdict === "moins bon que le marché" || verdict === "moins bon") return "text-down";
+  return "text-mist";
+}
+
+function Ia({ lab }: { lab: LabData }) {
+  const ia = lab.ia.dernier;
+  const history = [...lab.ia.historique].reverse().slice(0, 6);
+  return (
+    <section id="ia" className="mt-3 scroll-mt-16 rounded-lg border border-rule bg-panel p-4">
+      <h2 className="text-sm font-medium text-ink">IA (papier)</h2>
+      <p className="mt-1 text-xs text-mist">
+        Arbres de décision combinés et réseau de neurones, entraînés sur le cours du BTC et le
+        carnet Polymarket, réentraînés toutes les 6 h. Jugés uniquement sur des fenêtres qu'ils
+        n'avaient jamais vues, contre le simple prix du marché. Aucun ordre réel.
+      </p>
+      {!ia ? (
+        <p className="mt-3 text-sm text-mist">
+          Pas encore de résultat (il faut au moins 300 fenêtres dans le journal). Lance sur cette
+          machine : <span className="break-all font-mono text-xs">pm2 start npm --name fenetre-ia -- run ia -- --boucle</span>
+        </p>
+      ) : (
+        <>
+          <div className="mt-3 rounded-md border border-rule bg-panel-2 px-3 py-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className={`text-base font-medium ${verdictTone(ia.verdict)}`}>{ia.verdict}</p>
+              <p className="font-mono text-xs text-mist">
+                {ia.fenetres} / {ia.objectif} fenêtres · calculé le{" "}
+                {new Date(ia.majA).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
+              </p>
+            </div>
+            <div
+              className="mt-2 h-1.5 overflow-hidden rounded-full bg-rule"
+              role="progressbar"
+              aria-label="Fenêtres récoltées pour un verdict définitif"
+              aria-valuemin={0}
+              aria-valuemax={ia.objectif}
+              aria-valuenow={Math.min(ia.fenetres, ia.objectif)}
+            >
+              <div
+                className="h-full bg-brass"
+                style={{ width: `${Math.min(100, (ia.fenetres / ia.objectif) * 100)}%` }}
+              />
+            </div>
+            <p className="mt-2 text-sm text-ink">{ia.explication}</p>
+          </div>
+          <ul className="mt-3 grid gap-2 md:grid-cols-2">
+            {ia.modeles.map((m) => {
+              const atEdge = m.trading.filter((t) => t.ecart === ia.ecartVerdict);
+              return (
+                <li key={m.cle} className="min-w-0 rounded-md border border-rule bg-panel-2 px-3 py-2">
+                  <p className="text-sm text-ink">{m.nom}</p>
+                  <p className="mt-1 text-xs text-mist">
+                    Erreur de prédiction face au marché (négatif = meilleure) :
+                  </p>
+                  <p className="font-mono text-sm">
+                    <span className={signedTone(-m.ecart.mean)}>
+                      {m.ecart.mean >= 0 ? "+" : ""}
+                      {formatPlain(m.ecart.mean, 4)}
+                    </span>
+                    <span className="text-mist"> ± {formatPlain(2 * m.ecart.se, 4)} · </span>
+                    <span className={verdictTone(m.ecart.verdict)}>{m.ecart.verdict}</span>
+                  </p>
+                  <p className="mt-2 text-xs text-mist">
+                    Trading simulé sur {ia.fenetresTest} fenêtres jamais vues · écart min.{" "}
+                    {formatPlain(ia.ecartVerdict * 100, 0)} c · 5 $ · frais compris
+                  </p>
+                  <ul className="mt-0.5 space-y-0.5 font-mono text-xs">
+                    {atEdge.map((t) => (
+                      <li key={t.execution} className="flex flex-wrap justify-between gap-x-3">
+                        <span className="text-mist">
+                          {t.execution} · {t.trades} trades
+                        </span>
+                        <span className={signedTone(t.total)}>
+                          {formatSignedUsd(t.total)}
+                          {t.trades > 0
+                            ? ` (${formatSignedUsd(t.moyenne)}${t.incertitude != null ? ` ± ${formatPlain(t.incertitude, 2)}` : ""} / trade)`
+                            : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {m.importance ? (
+                    <div className="mt-2">
+                      <p className="text-xs text-mist">Ce qu'elle regarde :</p>
+                      {m.importance.filter((s) => s.part > 0.005).length === 0 ? (
+                        <p className="text-xs text-ink">
+                          rien : elle reste sur le prix du marché, faute de signal.
+                        </p>
+                      ) : (
+                        <ul className="mt-1 space-y-1">
+                          {m.importance
+                            .filter((s) => s.part > 0.005)
+                            .slice(0, 4)
+                            .map((s) => (
+                              <li key={s.signal} className="text-xs text-ink">
+                                <div className="flex justify-between gap-2">
+                                  <span className="truncate">{s.signal}</span>
+                                  <span className="font-mono text-mist">
+                                    {Math.round(s.part * 100)} %
+                                  </span>
+                                </div>
+                                <div className="mt-0.5 h-1 rounded-full bg-rule">
+                                  <div
+                                    className="h-full rounded-full bg-mist"
+                                    style={{ width: `${Math.round(s.part * 100)}%` }}
+                                  />
+                                </div>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {history.length > 1 ? (
+            <div className="mt-3">
+              <h3 className="text-xs text-mist">Entraînements précédents</h3>
+              <ul className="mt-1 space-y-0.5 font-mono text-xs">
+                {history.map((h) => (
+                  <li key={h.majA} className="flex flex-wrap justify-between gap-x-3">
+                    <span className="text-mist">
+                      {new Date(h.majA).toLocaleString("fr-FR", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}{" "}
+                      · {h.fenetres} fenêtres
+                    </span>
+                    <span className={verdictTone(h.verdict)}>{h.verdict}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </>
       )}
     </section>

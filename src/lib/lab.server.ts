@@ -6,6 +6,8 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type {
   Lab,
+  LabIa,
+  LabIaHistory,
   LabMakerState,
   LabPaperLive,
   LabPaperScores,
@@ -185,9 +187,14 @@ export function loadLab(): Lab {
       journal: { majA: obs.lastAt, source: obs.source },
       papier: { majA: mtime(`${JOURNAL}/papier-live.json`) },
       maker: { majA: mtime(`${MAKER}/etat.json`), flux: makerState?.flux ?? null },
+      ia: { majA: mtime(`${JOURNAL}/ia.json`) },
     },
     fenetres,
     maker: { etat: makerState, variantes: variantStats(makerLines, makerState) },
     papier: { scores: paperScores, live: paperLive },
+    ia: {
+      dernier: readJson<LabIa>(`${JOURNAL}/ia.json`),
+      historique: parseLines<LabIaHistory>(tailLines(`${JOURNAL}/ia-historique.jsonl`, 40_000)).slice(-60),
+    },
   };
 }

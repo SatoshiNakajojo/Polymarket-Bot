@@ -20,13 +20,13 @@ export const FEATURES = [
 export const logit = (p: number) => Math.log(p / (1 - p));
 export const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
 
-function imbalance(a: number | null, b: number | null): number | null {
+export function imbalance(a: number | null, b: number | null): number | null {
   if (a == null || b == null || !(a + b > 0)) return null;
   return (a - b) / (a + b);
 }
 
 /** Rendement ramené à la volatilité attendue sur k secondes. */
-function momentum(ret: number | null, row: Row, k: number): number | null {
+export function momentum(ret: number | null, row: Row, k: number): number | null {
   if (ret == null || row.sigma == null || row.spot == null || !(row.spot > 0)) return null;
   const scale = (row.sigma / row.spot) * Math.sqrt(k);
   return scale > 0 ? clamp(ret / scale, -5, 5) : null;

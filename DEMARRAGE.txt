@@ -63,3 +63,15 @@ Sur le VPS, une récolte toutes les 6 h :
 Résultats dans data/ferme/ferme.json (lu par le vaisseau mère).
 Il faut un journal d'au moins 100 fenêtres ; le verdict n'a de poids
 qu'avec plusieurs milliers (quelques semaines de journal).
+
+L'IA (arbres de décision combinés + réseau de neurones, aucun ordre, aucune clé) :
+   npm run ia
+Elle apprend sur le journal (cours du BTC + carnet Polymarket) en partant du
+prix du marché, puis elle est jugée sur des fenêtres qu'elle n'a jamais vues :
+erreur de prédiction face au marché, et trading simulé frais compris
+(exécution immédiate et 15 s plus tard). Verdict définitif à 5000 fenêtres.
+Sur le VPS, réentraînée toutes les 6 h (IA_HEURES pour changer) :
+   pm2 start npm --name fenetre-ia -- run ia -- --boucle
+   pm2 save
+Résultat dans data/journal/ia.json, affiché dans la page (partie « IA »).
+Il faut au moins 300 fenêtres complètes dans le journal.

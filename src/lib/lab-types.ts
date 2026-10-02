@@ -60,14 +60,54 @@ export type LabWindow = {
   maker: { pnl: number; paires: number; up: number; down: number; executions: number } | null;
 };
 
+export type LabIaTrading = {
+  ecart: number;
+  execution: string;
+  trades: number;
+  gagnes: number;
+  total: number;
+  moyenne: number;
+  incertitude: number | null;
+};
+
+export type LabIa = {
+  majA: string;
+  fenetres: number;
+  objectif: number;
+  ecartVerdict: number;
+  fenetresTest: number;
+  verdict: string;
+  explication: string;
+  modeles: {
+    cle: string;
+    nom: string;
+    perteModele: number;
+    perteMarche: number;
+    ecart: { mean: number; se: number; verdict: string };
+    trading: LabIaTrading[];
+    etapes: number[];
+    importance: { signal: string; part: number }[] | null;
+    bat: boolean;
+  }[];
+};
+
+export type LabIaHistory = {
+  majA: string;
+  fenetres: number;
+  verdict: string;
+  modeles: { cle: string; ecart: number; incertitude: number; trades: number; pnl: number }[];
+};
+
 export type Lab = {
   maintenant: number;
   services: {
     journal: { majA: number | null; source: string | null };
     papier: { majA: number | null };
     maker: { majA: number | null; flux: string | null };
+    ia: { majA: number | null };
   };
   fenetres: LabWindow[];
   maker: { etat: LabMakerState | null; variantes: LabVariant[] };
   papier: { scores: LabPaperScores | null; live: LabPaperLive | null };
+  ia: { dernier: LabIa | null; historique: LabIaHistory[] };
 };
