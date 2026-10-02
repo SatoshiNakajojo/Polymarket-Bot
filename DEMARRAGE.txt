@@ -75,3 +75,12 @@ Sur le VPS, réentraînée toutes les 6 h (IA_HEURES pour changer) :
    pm2 save
 Résultat dans data/journal/ia.json, affiché dans la page (partie « IA »).
 Il faut au moins 300 fenêtres complètes dans le journal.
+
+L'interface sur le VPS, ouverte depuis le vaisseau mère (bot.ton-domaine) :
+   pm2 start npm --name fenetre-ui -- run ui
+   pm2 save
+« npm run ui » n'écoute que sur le VPS lui-même (127.0.0.1:8080) : seul le
+tunnel Cloudflare la joint, derrière la porte Access. Son adresse doit être
+déclarée à Vite (sinon il répond « host not allowed ») :
+   __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=bot.ton-domaine pm2 start npm --name fenetre-ui -- run ui
+Mode d'emploi complet : vaisseau mère, guide du serveur, étape 16.
